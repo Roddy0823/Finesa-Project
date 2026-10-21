@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e3a6e" />
+      <stop offset="100%" stop-color="#112244" />
+    </linearGradient>
+    <linearGradient id="accent" x1="128" y1="96" x2="384" y2="416" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#93c5fd" />
+      <stop offset="100%" stop-color="#60a5fa" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="116" fill="url(#bg)" />
+  <rect x="20" y="20" width="472" height="472" rx="98" stroke="#ffffff" stroke-opacity="0.08" stroke-width="4" />
+  <!-- Monograma F estilizado -->
+  <path d="M156 128H364C375.046 128 384 136.954 384 148V180C384 191.046 375.046 200 364 200H236V236H332C343.046 236 352 244.954 352 256V284C352 295.046 343.046 304 332 304H236V380C236 391.046 227.046 400 216 400H176C164.954 400 156 391.046 156 380V148C156 136.954 164.954 128 176 128Z" fill="#f8fafc" />
+  <!-- Punto / barra de acento Finesa -->
+  <rect x="284" y="340" width="100" height="60" rx="20" fill="url(#accent)" />
+</svg>
