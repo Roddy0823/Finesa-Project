@@ -41,42 +41,6 @@ export const Route = createFileRoute("/")({
   component: Login,
 });
 
-/**
- * Logotipo oficial de Finesa en SVG vectorial con monograma y acento de marca.
- */
-function FinesaLogo({ className = "h-10 w-10" }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 512 512"
-      fill="none"
-      className={className}
-      aria-label="Logo Finesa"
-    >
-      <defs>
-        <linearGradient id="finesa-bg-grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#1e3a8a" />
-          <stop offset="50%" stopColor="#1e293b" />
-          <stop offset="100%" stopColor="#0f172a" />
-        </linearGradient>
-        <linearGradient id="finesa-accent-grad" x1="284" y1="340" x2="384" y2="400" gradientUnits="userSpaceOnUse">
-          <stop offset="0%" stopColor="#60a5fa" />
-          <stop offset="100%" stopColor="#2563eb" />
-        </linearGradient>
-      </defs>
-      <rect width="512" height="512" rx="120" fill="url(#finesa-bg-grad)" />
-      <rect x="16" y="16" width="480" height="480" rx="104" stroke="#ffffff" strokeOpacity="0.15" strokeWidth="6" />
-      {/* Monograma F estilizado */}
-      <path
-        d="M156 128H364C375.046 128 384 136.954 384 148V180C384 191.046 375.046 200 364 200H236V236H332C343.046 236 352 244.954 352 256V284C352 295.046 343.046 304 332 304H236V380C236 391.046 227.046 400 216 400H176C164.954 400 156 391.046 156 380V148C156 136.954 164.954 128 176 128Z"
-        fill="#ffffff"
-      />
-      {/* Barra de acento Finesa */}
-      <rect x="284" y="340" width="100" height="60" rx="20" fill="url(#finesa-accent-grad)" />
-    </svg>
-  );
-}
-
 function Login() {
   const loaderData = Route.useLoaderData();
   const obtenerConfigFn = useServerFn(obtenerConfigPortal);
@@ -166,14 +130,22 @@ function Login() {
       <div className="login-card w-full max-w-[410px] rounded-2xl border border-border/80 bg-card/90 p-7 shadow-2xl backdrop-blur-xl sm:p-8">
         {/* Cabecera con Logotipo Oficial de Finesa */}
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="relative mb-3 flex items-center justify-center">
-            <div className="absolute -inset-1.5 rounded-2xl bg-primary/25 blur-sm" />
-            <FinesaLogo className="relative h-14 w-14 rounded-2xl shadow-lg ring-1 ring-white/20" />
+          <h1 className="sr-only">Finesa — Plataforma de activos TI y actas digitales</h1>
+          <div className="flex items-center justify-center">
+            {/* Logo Finesa 3 para tema claro */}
+            <img
+              src="/logo-finesa-light.png"
+              alt="Finesa"
+              className="h-16 w-auto max-w-[260px] object-contain drop-shadow-sm transition-all duration-200 dark:hidden"
+            />
+            {/* Logo Finesa 2 para tema oscuro */}
+            <img
+              src="/logo-finesa-dark.png"
+              alt="Finesa"
+              className="hidden h-16 w-auto max-w-[260px] object-contain drop-shadow-sm transition-all duration-200 dark:block"
+            />
           </div>
-          <h1 className="font-display text-xl font-bold tracking-tight text-foreground">
-            Finesa Inventario
-          </h1>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-2 text-xs text-muted-foreground">
             Plataforma de activos TI y actas digitales
           </p>
         </div>
