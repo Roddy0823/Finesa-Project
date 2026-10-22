@@ -186,7 +186,7 @@ function Login() {
         ) : (
           <div className="mb-6 flex items-center justify-center gap-1.5 rounded-xl border border-primary/25 bg-primary/10 py-2 text-xs font-semibold text-primary">
             <ShieldCheck className="h-3.5 w-3.5" />
-            <span>Mesa de servicios TI</span>
+            <span>Mesa de servicios</span>
           </div>
         )}
 
