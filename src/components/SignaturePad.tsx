@@ -59,7 +59,7 @@ export function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) 
 
   return (
     <div className="space-y-2">
-      <div className="relative rounded-md border-2 border-dashed border-input bg-card">
+      <div className="relative overflow-hidden rounded-xl border-2 border-dashed border-input bg-white text-slate-900 shadow-inner">
         <canvas
           ref={ref}
           className="h-48 w-full touch-none cursor-crosshair sm:h-56"
@@ -70,11 +70,11 @@ export function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) 
           aria-label="Área de firma"
         />
         {empty && (
-          <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-slate-400">
             Firme aquí con el dedo o el mouse
           </span>
         )}
-        <div className="pointer-events-none absolute bottom-10 left-6 right-6 border-b border-border" />
+        <div className="pointer-events-none absolute bottom-10 left-6 right-6 border-b border-slate-200" />
       </div>
       <Button type="button" variant="ghost" size="sm" onClick={clear}>
         <Eraser className="mr-1 h-4 w-4" /> Borrar firma

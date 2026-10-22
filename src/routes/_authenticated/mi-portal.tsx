@@ -9,6 +9,7 @@ import { TIPO_ACTA, errMsg, fmtFecha } from "@/lib/constantes";
 import { firmarComoEmpleado, urlArchivo } from "@/lib/firmas.functions";
 import { descargarPdfActa } from "@/lib/descargarPdf";
 import { PageHeader, EstadoActa, EstadoEquipo } from "@/components/Estado";
+import { DataTablePagination, usePaginacion } from "@/components/DataTablePagination";
 import { ActaResumen } from "@/components/ActaResumen";
 import { SignaturePad } from "@/components/SignaturePad";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ function Portal() {
   const [abierta, setAbierta] = useState<string | null>(null);
   const [falla, setFalla] = useState<string | null>(null);
   const [certOpen, setCertOpen] = useState(false);
+  const pagActas = usePaginacion(me?.id ?? "", 25);
   const q = useQuery({
     queryKey: ["portal"],
     enabled: !!me,
@@ -52,6 +54,7 @@ function Portal() {
   const pendientes = actas.filter((a) => a.estado === "pendiente");
   const reparacion = equipos.filter((e) => e.estado === "en_reparacion");
   const historial = actas.filter((a) => a.estado !== "pendiente");
+  const historialPagina = historial.slice(pagActas.desde, pagActas.desde + pagActas.tamano);
   const actaAbierta = actas.find((a) => a.id === abierta);
 
   async function descargar(id: string, numero: number) {
@@ -98,10 +101,10 @@ function Portal() {
             {!equipos.length && <li className="px-5 py-6 text-sm text-muted-foreground">No tiene equipos asignados.</li>}
           </ul>
         </section>
-        <section className="rounded-md border border-border bg-card">
-          <div className="border-b border-border px-5 py-3 font-medium">Historial de actas</div>
+        <section className="overflow-hidden rounded-md border border-border bg-card">
+          <div className="border-b border-border px-5 py-3 font-medium">Historial de actas ({historial.length})</div>
           <ul className="divide-y divide-border">
-            {historial.map((a) => (
+            {historialPagina.map((a) => (
               <li key={a.id} className="flex items-center justify-between gap-2 px-5 py-3 text-sm">
                 <span>{TIPO_ACTA[a.tipo]} #{a.numero}<div className="text-xs text-muted-foreground">{fmtFecha(a.firmado_at ?? a.created_at)}</div></span>
                 <span className="flex items-center gap-2"><EstadoActa estado={a.estado} />{a.pdf_path && <Button size="icon" variant="ghost" onClick={() => descargar(a.id, a.numero)} aria-label="Descargar"><Download className="h-4 w-4" /></Button>}</span>
@@ -109,6 +112,15 @@ function Portal() {
             ))}
             {!historial.length && <li className="px-5 py-6 text-sm text-muted-foreground">Sin actas.</li>}
           </ul>
+          {historial.length > 0 && (
+            <DataTablePagination
+              pagina={pagActas.pagina}
+              tamano={pagActas.tamano}
+              total={historial.length}
+              onPagina={pagActas.setPagina}
+              onTamano={pagActas.setTamano}
+            />
+          )}
         </section>
       </div>
       {falla && <ReportarFalla equipoId={falla} onDone={() => setFalla(null)} />}

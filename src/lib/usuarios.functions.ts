@@ -1,7 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { registrarAuditoria } from "./firmas.server";
+import { clientIp, registrarAuditoria } from "./firmas.server";
+import { checkRateLimit, validarPoliticaPassword } from "./security.server";
 
 const PERMISOS_DB = [
   "equipos_editar",
@@ -54,6 +55,8 @@ export const crearAuxiliar = createServerFn({ method: "POST" })
   )
   .handler(async ({ data, context }) => {
     if (!(await esAdmin(context))) return NO_ADMIN;
+    const pwdErr = validarPoliticaPassword(data.password);
+    if (pwdErr) return { error: pwdErr };
     const permisosDb = data.permisos.filter((p): p is PermisoDB => SET_PERMISOS_DB.has(p));
     const permisosExtra = data.permisos.filter((p) => !SET_PERMISOS_DB.has(p));
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -73,14 +76,58 @@ export const crearAuxiliar = createServerFn({ method: "POST" })
     return { id };
   });
 
+export const actualizarDatosAuxiliar = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) =>
+    z
+      .object({
+        userId: z.string().uuid(),
+        nombre: z.string().trim().min(2).max(120),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data, context }) => {
+    if (!(await esAdmin(context))) return NO_ADMIN;
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: esAux } = await supabaseAdmin
+      .from("user_roles")
+      .select("id")
+      .eq("user_id", data.userId)
+      .eq("role", "auxiliar")
+      .eq("owner_id", context.userId)
+      .maybeSingle();
+    if (!esAux) return { error: "Solo se pueden editar auxiliares de su ecosistema." };
+    const { data: prev } = await supabaseAdmin.from("profiles").select("nombre").eq("id", data.userId).maybeSingle();
+    const { error } = await supabaseAdmin.from("profiles").update({ nombre: data.nombre }).eq("id", data.userId);
+    if (error) return { error: error.message };
+    await supabaseAdmin.auth.admin.updateUserById(data.userId, {
+      user_metadata: { nombre: data.nombre },
+    });
+    await registrarAuditoria(
+      supabaseAdmin,
+      context.userId,
+      "usuarios",
+      "EDITAR_AUXILIAR",
+      data.userId,
+      `Nombre de auxiliar actualizado: ${prev?.nombre ?? ""} → ${data.nombre}`,
+    );
+    return { ok: true };
+  });
+
 export const actualizarPermisos = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d) => z.object({ userId: z.string().uuid(), permisos: z.array(z.enum(PERMISOS)) }).parse(d))
   .handler(async ({ data, context }) => {
     if (!(await esAdmin(context))) return NO_ADMIN;
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: esAux } = await supabaseAdmin.from("user_roles").select("id").eq("user_id", data.userId).eq("role", "auxiliar").maybeSingle();
-    if (!esAux) return { error: "Solo se pueden configurar permisos de auxiliares." };
+    const { data: esAux } = await supabaseAdmin
+      .from("user_roles")
+      .select("id")
+      .eq("user_id", data.userId)
+      .eq("role", "auxiliar")
+      .eq("owner_id", context.userId)
+      .maybeSingle();
+    if (!esAux) return { error: "Solo se pueden configurar permisos de auxiliares de su ecosistema." };
     const permisosDb = data.permisos.filter((p): p is PermisoDB => SET_PERMISOS_DB.has(p));
     const permisosExtra = data.permisos.filter((p) => !SET_PERMISOS_DB.has(p));
     await supabaseAdmin.from("user_permisos").delete().eq("user_id", data.userId);
@@ -189,8 +236,17 @@ export const cambiarEstadoUsuario = createServerFn({ method: "POST" })
     if (!(await esAdmin(context))) return NO_ADMIN;
     if (data.userId === context.userId) return { error: "No puede suspender su propia cuenta." };
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: esAdm } = await supabaseAdmin.from("user_roles").select("id").eq("user_id", data.userId).eq("role", "admin").maybeSingle();
-    if (esAdm) return { error: "Las cuentas de Administrador solo se gestionan en la base de datos." };
+    const { data: roles } = await supabaseAdmin
+      .from("user_roles")
+      .select("role, owner_id")
+      .eq("user_id", data.userId);
+    if (roles?.some((r) => r.role === "admin")) {
+      return { error: "Las cuentas de Administrador solo se gestionan en la base de datos." };
+    }
+    const perteneceEcosistema = roles?.some((r) => r.role === "auxiliar" && r.owner_id === context.userId);
+    if (!perteneceEcosistema) {
+      return { error: "No tiene autorización sobre este usuario." };
+    }
     await supabaseAdmin.auth.admin.updateUserById(data.userId, { ban_duration: data.activo ? "none" : "876000h" });
     await supabaseAdmin.from("profiles").update({ activo: data.activo }).eq("id", data.userId);
     await registrarAuditoria(supabaseAdmin, context.userId, "usuarios", data.activo ? "REACTIVAR" : "SUSPENDER", data.userId, data.activo ? "Cuenta reactivada" : "Cuenta suspendida");
@@ -202,10 +258,16 @@ export const cambiarPasswordAuxiliar = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object({ userId: z.string().uuid(), password: z.string().min(8).max(72) }).parse(d))
   .handler(async ({ data, context }) => {
     if (!(await esAdmin(context))) return NO_ADMIN;
+    const pwdErr = validarPoliticaPassword(data.password);
+    if (pwdErr) return { error: pwdErr };
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: roles } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", data.userId);
-    if (!roles?.some((r) => r.role === "auxiliar") || roles.some((r) => r.role === "admin"))
-      return { error: "Solo se puede cambiar la contraseña de auxiliares." };
+    const { data: roles } = await supabaseAdmin.from("user_roles").select("role, owner_id").eq("user_id", data.userId);
+    if (
+      !roles?.some((r) => r.role === "auxiliar" && r.owner_id === context.userId) ||
+      roles.some((r) => r.role === "admin")
+    ) {
+      return { error: "Solo se puede cambiar la contraseña de auxiliares de su ecosistema." };
+    }
     const { error } = await supabaseAdmin.auth.admin.updateUserById(data.userId, { password: data.password });
     if (error) return { error: error.message };
     await registrarAuditoria(supabaseAdmin, context.userId, "usuarios", "CAMBIAR_CONTRASEÑA", data.userId, "Contraseña del auxiliar cambiada por el Administrador");
@@ -219,9 +281,13 @@ export const eliminarAuxiliar = createServerFn({ method: "POST" })
     if (!(await esAdmin(context))) return NO_ADMIN;
     if (data.userId === context.userId) return { error: "No puede eliminar su propia cuenta." };
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    const { data: roles } = await supabaseAdmin.from("user_roles").select("role").eq("user_id", data.userId);
-    if (!roles?.some((r) => r.role === "auxiliar") || roles.some((r) => r.role === "admin"))
-      return { error: "Solo se pueden eliminar cuentas de auxiliares." };
+    const { data: roles } = await supabaseAdmin.from("user_roles").select("role, owner_id").eq("user_id", data.userId);
+    if (
+      !roles?.some((r) => r.role === "auxiliar" && r.owner_id === context.userId) ||
+      roles.some((r) => r.role === "admin")
+    ) {
+      return { error: "Solo se pueden eliminar cuentas de auxiliares de su ecosistema." };
+    }
     const { data: p } = await supabaseAdmin.from("profiles").select("email, nombre").eq("id", data.userId).maybeSingle();
     await registrarAuditoria(supabaseAdmin, context.userId, "usuarios", "ELIMINAR_AUXILIAR", data.userId, `Cuenta de auxiliar eliminada: ${p?.email ?? data.userId} (${p?.nombre ?? "sin nombre"})`);
     await supabaseAdmin.from("user_permisos").delete().eq("user_id", data.userId);
@@ -277,6 +343,11 @@ export const habilitarAccesoEmpleado = createServerFn({ method: "POST" })
 export const ingresoEmpleado = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object({ cedula: z.string().trim().min(3).max(30), pin: z.string().regex(/^\d{4}$/) }).parse(d))
   .handler(async ({ data }) => {
+    const ip = clientIp();
+    const rl = checkRateLimit(`ingreso-emp:${ip}`, 10, 5 * 60_000);
+    if (!rl.allowed) {
+      return { error: `Demasiados intentos desde esta dirección. Intente nuevamente en ${Math.ceil(rl.retryAfterSec / 60)} min.` };
+    }
     const { leerPortalEmpleadosActivo } = await import("./configuracion.server");
     if (!(await leerPortalEmpleadosActivo())) {
       return { error: "El portal de empleados se encuentra deshabilitado." };
@@ -284,6 +355,7 @@ export const ingresoEmpleado = createServerFn({ method: "POST" })
     const generico = { error: "Cédula o PIN incorrectos." };
     const { emailEmpleado, passwordEmpleado, normalizarCedula } = await import("./acceso-empleado.server");
     const cedula = normalizarCedula(data.cedula);
+    if (cedula.length < 3) return generico;
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const { data: lista } = await supabaseAdmin.from("empleados").select("id, identificacion, activo, user_id, pin_intentos, pin_bloqueo_hasta").not("user_id", "is", null).ilike("identificacion", `%${cedula.slice(-4)}%`);
     const emp = (lista ?? []).find((e) => normalizarCedula(e.identificacion) === cedula);

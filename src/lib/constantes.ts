@@ -83,18 +83,50 @@ export const CATALOGOS = [
 ] as const;
 export type CatalogoTipo = (typeof CATALOGOS)[number]["id"];
 
-export const ESTADO_EQUIPO: Record<string, { label: string; cls: string }> = {
-  disponible: { label: "Disponible", cls: "bg-success/15 text-success border-success/30" },
-  asignado: { label: "Asignado", cls: "bg-primary/10 text-primary border-primary/30" },
-  en_alistamiento: { label: "En alistamiento", cls: "bg-accent text-accent-foreground border-border" },
-  en_reparacion: { label: "En reparación", cls: "bg-warning/20 text-warning-foreground border-warning/40" },
-  de_baja: { label: "De baja", cls: "bg-muted text-muted-foreground border-border" },
+export const ESTADO_EQUIPO: Record<string, { label: string; cls: string; dot?: string }> = {
+  disponible: {
+    label: "Disponible",
+    cls: "bg-success/12 text-success border-success/25",
+    dot: "bg-success",
+  },
+  asignado: {
+    label: "Asignado",
+    cls: "bg-primary/12 text-primary border-primary/25",
+    dot: "bg-primary",
+  },
+  en_alistamiento: {
+    label: "En alistamiento",
+    cls: "bg-accent text-accent-foreground border-border",
+    dot: "bg-muted-foreground",
+  },
+  en_reparacion: {
+    label: "En reparación",
+    cls: "bg-warning/15 text-warning-foreground border-warning/30",
+    dot: "bg-warning",
+  },
+  de_baja: {
+    label: "De baja",
+    cls: "bg-muted text-muted-foreground border-border",
+    dot: "bg-muted-foreground/60",
+  },
 };
 
-export const ESTADO_ACTA: Record<string, { label: string; cls: string }> = {
-  pendiente: { label: "Pendiente de firma", cls: "bg-warning/20 text-warning-foreground border-warning/40" },
-  firmada: { label: "Firmada", cls: "bg-success/15 text-success border-success/30" },
-  anulada: { label: "Anulada", cls: "bg-destructive/10 text-destructive border-destructive/30" },
+export const ESTADO_ACTA: Record<string, { label: string; cls: string; dot?: string }> = {
+  pendiente: {
+    label: "Pendiente de firma",
+    cls: "bg-warning/15 text-warning-foreground border-warning/30",
+    dot: "bg-warning",
+  },
+  firmada: {
+    label: "Firmada",
+    cls: "bg-success/12 text-success border-success/25",
+    dot: "bg-success",
+  },
+  anulada: {
+    label: "Anulada",
+    cls: "bg-destructive/12 text-destructive border-destructive/25",
+    dot: "bg-destructive",
+  },
 };
 
 export const TIPO_ACTA: Record<string, string> = { entrega: "Entrega", devolucion: "Devolución", cambio: "Cambio" };
@@ -112,7 +144,11 @@ export function fmtFecha(d?: string | null, hora = false) {
 export function descargarCSV(nombre: string, filas: Record<string, unknown>[]) {
   if (!filas.length) return;
   const cols = Object.keys(filas[0]!);
-  const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const esc = (v: unknown) => {
+    const raw = String(v ?? "");
+    const safe = /^[=+\-@\t\r]/.test(raw.trimStart()) ? `'${raw}` : raw;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
   const csv = "\uFEFF" + [cols.join(";"), ...filas.map((f) => cols.map((c) => esc(f[c])).join(";"))].join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");

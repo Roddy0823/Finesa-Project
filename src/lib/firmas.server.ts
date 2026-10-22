@@ -1,5 +1,6 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { getRequestHeader } from "@tanstack/react-start/server";
+import { validarPngBase64 } from "./security.server";
 
 type Admin = (typeof import("@/integrations/supabase/client.server"))["supabaseAdmin"];
 
@@ -169,11 +170,9 @@ export async function generarPdf(dto: ActaDTO, firmaPng: Uint8Array, meta: { fec
 export async function ejecutarFirma(admin: Admin, opts: { actaId: string; firmaDataUrl: string; medio: string; actorId: string | null }) {
   const completa = await cargarActaCompleta(admin, opts.actaId);
   if (completa.acta.estado !== "pendiente") throw new Error("El acta ya no está pendiente de firma.");
-  const m = /^data:image\/png;base64,(.+)$/.exec(opts.firmaDataUrl);
-  if (!m) throw new Error("Firma inválida");
-  const bytes = Uint8Array.from(atob(m[1]!), (c) => c.charCodeAt(0));
-  if (bytes.length < 500) throw new Error("La firma está vacía");
-  if (bytes.length > 2_000_000) throw new Error("La firma es demasiado grande");
+  const pngCheck = validarPngBase64(opts.firmaDataUrl);
+  if (!pngCheck.ok) throw new Error(pngCheck.error);
+  const bytes = pngCheck.bytes;
 
   const fecha = new Date().toISOString();
   const ip = clientIp();
