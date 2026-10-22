@@ -7,9 +7,8 @@ import { fmtFecha, errMsg } from "@/lib/constantes";
 import { COLUMNAS, HOJAS, descargarPlantilla, type HojaId } from "@/lib/cargaMasiva";
 import { PageHeader } from "@/components/Estado";
 import { ImportExcel } from "@/components/ImportExcel";
-import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Download, FileSpreadsheet, History, Laptop, Link2, ShieldCheck, Users } from "lucide-react";
+import { FileSpreadsheet, History, Laptop, Link2, ShieldCheck, Users } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/carga-masiva")({
   head: () => ({
@@ -64,12 +63,10 @@ function CargaMasiva() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Carga masiva" desc="Importe empleados, inventario y asignaciones en un solo archivo. Todo se valida fila por fila antes de guardar.">
-        <Button variant="outline" onClick={plantilla}>
-          <Download className="mr-1.5 h-4 w-4" />
-          Plantilla Excel completa
-        </Button>
-      </PageHeader>
+      <PageHeader
+        title="Carga masiva"
+        desc="Importe empleados, inventario y asignaciones en un solo archivo. Todo se valida fila por fila antes de guardar."
+      />
 
       {/* Pasos */}
       <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -142,6 +142,13 @@ function FichaEquipo() {
     window.open(data.signedUrl, "_blank", "noopener,noreferrer");
   }
 
+  async function verDocumentoBaja() {
+    if (!e?.baja_documento_path) return;
+    const { data, error } = await supabase.storage.from("facturas").createSignedUrl(e.baja_documento_path, 120);
+    if (error) return toast.error(error.message);
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }
+
   const emp = e.empleado as { id: string; nombre: string; identificacion?: string } | null;
   const hoyIso = new Date().toISOString().slice(0, 10);
   const enGarantia = !!e.garantia_fin && e.garantia_fin >= hoyIso;
@@ -286,12 +293,20 @@ function FichaEquipo() {
                 <Building2 className="h-4 w-4 text-primary" />
                 <h2 className="text-sm font-semibold text-foreground">Ficha técnica del activo</h2>
               </div>
-              {e.factura_path && (
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={verFactura}>
-                  <FileText className="mr-1 h-3.5 w-3.5" />
-                  Ver factura
-                </Button>
-              )}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {e.baja_documento_path && (
+                  <Button size="sm" variant="outline" className="h-7 border-destructive/30 text-xs text-destructive hover:bg-destructive/10" onClick={verDocumentoBaja}>
+                    <FileText className="mr-1 h-3.5 w-3.5" />
+                    Soporte de baja
+                  </Button>
+                )}
+                {e.factura_path && (
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={verFactura}>
+                    <FileText className="mr-1 h-3.5 w-3.5" />
+                    Ver factura
+                  </Button>
+                )}
+              </div>
             </div>
 
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3.5 p-5 text-xs">
@@ -1066,6 +1081,8 @@ function CambiarEstado({
   const [estado, setEstado] = useState(actual === "en_reparacion" ? "de_baja" : "en_reparacion");
   const [motivo, setMotivo] = useState("");
   const [prov, setProv] = useState("");
+  const [soporteBaja, setSoporteBaja] = useState<File | null>(null);
+  const [guardando, setGuardando] = useState(false);
   const servicio = useQuery({
     queryKey: ["proveedores_lista", "servicio"],
     enabled: open,
@@ -1083,20 +1100,40 @@ function CambiarEstado({
     if (!motivo.trim()) return toast.error("El motivo es obligatorio");
     const usarC = estado === "en_reparacion" && conting && puedeConting;
     if (usarC && !contEq) return toast.error("Seleccione el equipo de contingencia");
-    const { error } = await supabase.rpc("cambiar_estado_equipo", {
-      p_equipo: id,
-      p_estado: estado as "disponible",
-      p_motivo: motivo.trim(),
-      ...(estado === "en_reparacion" && prov ? { p_proveedor: prov } : {}),
-    });
-    if (error) return toast.error(errMsg(error));
-    toast.success("Estado actualizado");
-    setOpen(false);
-    setMotivo("");
-    setProv("");
-    qc.invalidateQueries({ queryKey: ["equipo", id] });
-    qc.invalidateQueries({ queryKey: ["equipos"] });
-    qc.invalidateQueries({ queryKey: ["proveedor"] });
+    setGuardando(true);
+    let bajaPath: string | null = null;
+    try {
+      if (estado === "de_baja" && soporteBaja) {
+        if (soporteBaja.size > 10 * 1024 * 1024) throw new Error("El soporte de baja supera 10 MB");
+        const ext = soporteBaja.name.split(".").pop()?.toLowerCase() ?? "pdf";
+        bajaPath = `baja_${crypto.randomUUID()}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from("facturas")
+          .upload(bajaPath, soporteBaja, { contentType: soporteBaja.type });
+        if (upErr) throw upErr;
+      }
+      const { error } = await supabase.rpc("cambiar_estado_equipo", {
+        p_equipo: id,
+        p_estado: estado as "disponible",
+        p_motivo: motivo.trim(),
+        ...(estado === "en_reparacion" && prov ? { p_proveedor: prov } : {}),
+        ...(estado === "de_baja" && bajaPath ? { p_documento_baja: bajaPath } : {}),
+      });
+      if (error) return toast.error(errMsg(error));
+      toast.success("Estado actualizado");
+      setOpen(false);
+      setMotivo("");
+      setProv("");
+      setSoporteBaja(null);
+      qc.invalidateQueries({ queryKey: ["equipo", id] });
+      qc.invalidateQueries({ queryKey: ["equipos"] });
+      qc.invalidateQueries({ queryKey: ["proveedor"] });
+    } catch (e) {
+      toast.error(errMsg(e));
+      return;
+    } finally {
+      setGuardando(false);
+    }
     if (usarC) {
       const { data: acta, error: e1 } = await supabase
         .from("actas")
@@ -1229,13 +1266,34 @@ function CambiarEstado({
             )}
           </div>
         )}
+        {estado === "de_baja" && (
+          <div className="space-y-1.5 rounded-xl border border-destructive/20 bg-destructive/5 p-3">
+            <Label className="text-xs font-semibold text-destructive">
+              Soporte técnico o acta de baja (opcional)
+            </Label>
+            <p className="text-[11px] text-muted-foreground">
+              Adjunte concepto pericial, soporte de descarte o acta contable (PDF o imagen, máx 10 MB).
+            </p>
+            <Input
+              type="file"
+              accept=".pdf,.png,.jpg,.jpeg,.webp"
+              className="text-xs file:mr-2 file:rounded-md file:border-0 file:bg-primary file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-primary-foreground"
+              onChange={(e) => setSoporteBaja(e.target.files?.[0] ?? null)}
+            />
+            {soporteBaja && (
+              <p className="font-mono text-[11px] text-muted-foreground">
+                Archivo: <span className="font-medium text-foreground">{soporteBaja.name}</span> ({(soporteBaja.size / 1024).toFixed(1)} KB)
+              </p>
+            )}
+          </div>
+        )}
         <div className="space-y-1">
           <Label>Motivo *</Label>
           <Textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} />
         </div>
         <DialogFooter>
-          <Button onClick={guardar} variant={estado === "de_baja" ? "destructive" : "default"}>
-            Confirmar
+          <Button onClick={guardar} disabled={guardando} variant={estado === "de_baja" ? "destructive" : "default"}>
+            {guardando ? "Procesando…" : "Confirmar"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,9 +1,8 @@
-import { fetchAll } from "@/lib/fetchAll";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DataTablePagination, FilasSkeleton, usePaginacion } from "@/components/DataTablePagination";
 import { BannerStock } from "@/components/StockAlertas";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useMe } from "@/lib/me";
 import { useCatalogos } from "@/lib/catalogos";
@@ -40,12 +39,24 @@ export const Route = createFileRoute("/_authenticated/equipos/")({
   ): {
     tab?: "activos" | "en_reparacion" | "en_alistamiento" | "de_baja" | undefined;
     estado?: "disponible" | "asignado" | undefined;
+    tipo?: string | undefined;
+    marca?: string | undefined;
+    sede?: string | undefined;
+    q?: string | undefined;
+    page?: number | undefined;
+    pageSize?: number | undefined;
   } => ({
     tab:
       s.tab === "en_reparacion" || s.tab === "en_alistamiento" || s.tab === "de_baja" || s.tab === "activos"
         ? s.tab
         : undefined,
     estado: s.estado === "disponible" || s.estado === "asignado" ? s.estado : undefined,
+    tipo: typeof s.tipo === "string" ? s.tipo : undefined,
+    marca: typeof s.marca === "string" ? s.marca : undefined,
+    sede: typeof s.sede === "string" ? s.sede : undefined,
+    q: typeof s.q === "string" ? s.q : undefined,
+    page: typeof s.page === "number" ? s.page : Number(s.page) || undefined,
+    pageSize: typeof s.pageSize === "number" ? s.pageSize : Number(s.pageSize) || undefined,
   }),
   head: () => ({
     meta: [{ title: "Inventario — Finesa" }, { name: "description", content: "Equipos de cómputo y periféricos." }],
@@ -66,18 +77,39 @@ function Equipos() {
   const nav = useNavigate();
   const sp = Route.useSearch();
   const [tab, setTab] = useState<Pestana>(sp.tab ?? "activos");
-  const [f, setF] = useState({ texto: "", tipo: "", marca: "", estado: sp.estado ?? "", sede: "" });
-  const [texto, setTexto] = useState("");
+  const [f, setF] = useState({
+    texto: sp.q ?? "",
+    tipo: sp.tipo ?? "",
+    marca: sp.marca ?? "",
+    estado: sp.estado ?? "",
+    sede: sp.sede ?? "",
+  });
+  const [texto, setTexto] = useState(limpiar(f.texto));
   useEffect(() => {
     const h = setTimeout(() => setTexto(limpiar(f.texto)), 250);
     return () => clearTimeout(h);
   }, [f.texto]);
-  useEffect(() => {
-    setTab(sp.tab ?? "activos");
-    setF((x) => ({ ...x, estado: sp.estado ?? "" }));
-  }, [sp.tab, sp.estado]);
+
   const filtros = { texto, tipo: f.tipo, marca: f.marca, estado: f.estado, sede: f.sede };
-  const pag = usePaginacion({ ...filtros, tab }, 25);
+  const pag = usePaginacion({ ...filtros, tab }, sp.pageSize ?? 25);
+
+  // Sincronizar filtros con la URL
+  useEffect(() => {
+    void nav({
+      to: "/equipos",
+      search: {
+        tab: tab !== "activos" ? tab : undefined,
+        estado: (f.estado as "disponible" | "asignado") || undefined,
+        tipo: f.tipo || undefined,
+        marca: f.marca || undefined,
+        sede: f.sede || undefined,
+        q: texto || undefined,
+        page: pag.pagina > 1 ? pag.pagina : undefined,
+        pageSize: pag.tamano !== 25 ? pag.tamano : undefined,
+      },
+      replace: true,
+    });
+  }, [tab, f.estado, f.tipo, f.marca, f.sede, texto, pag.pagina, pag.tamano, nav]);
 
   const conteoQ = useQuery({
     queryKey: ["equipos", "conteo"],
@@ -97,12 +129,15 @@ function Equipos() {
   });
 
   const q = useQuery({
-    queryKey: ["equipos", "pagina", filtros, pag.desde, pag.tamano],
-    enabled: tab === "activos",
+    queryKey: ["equipos", "pagina", tab, filtros, pag.desde, pag.tamano],
     placeholderData: keepPreviousData,
     queryFn: async () => {
       let s = supabase.from("equipos").select("*, empleado:empleados(id, nombre)", { count: "exact" });
-      s = f.estado ? s.eq("estado", f.estado as "disponible") : s.in("estado", ["disponible", "asignado"]);
+      if (tab === "activos") {
+        s = f.estado ? s.eq("estado", f.estado as "disponible") : s.in("estado", ["disponible", "asignado"]);
+      } else {
+        s = s.eq("estado", tab);
+      }
       if (f.tipo) s = s.eq("tipo_id", f.tipo);
       if (f.marca) s = s.eq("marca_id", f.marca);
       if (f.sede) s = s.eq("sede_id", f.sede);
@@ -117,8 +152,9 @@ function Equipos() {
         if (emps?.length) conds.push(`empleado_id.in.(${emps.map((e) => e.id).join(",")})`);
         s = s.or(conds.join(","));
       }
+      const ordenCol = tab === "activos" ? "created_at" : "updated_at";
       const { data, count, error } = await s
-        .order("created_at", { ascending: false })
+        .order(ordenCol, { ascending: false })
         .order("id")
         .range(pag.desde, pag.hasta);
       if (error) throw error;
@@ -126,36 +162,7 @@ function Equipos() {
     },
   });
 
-  const especial = useQuery({
-    queryKey: ["equipos", "especial", tab],
-    enabled: tab !== "activos",
-    queryFn: () =>
-      fetchAll((a, b) =>
-        supabase
-          .from("equipos")
-          .select("*, empleado:empleados(id, nombre)")
-          .eq("estado", tab as "de_baja")
-          .order("updated_at", { ascending: false })
-          .order("id")
-          .range(a, b),
-      ),
-  });
-  const listaEsp = useMemo(() => {
-    const t = texto.toLowerCase();
-    return (especial.data ?? []).filter(
-      (e) =>
-        (!t ||
-          e.serie.toLowerCase().includes(t) ||
-          (e.activo_fijo ?? "").toLowerCase().includes(t) ||
-          (e.modelo ?? "").toLowerCase().includes(t) ||
-          ((e.empleado as { nombre: string } | null)?.nombre ?? "").toLowerCase().includes(t)) &&
-        (!f.tipo || e.tipo_id === f.tipo) &&
-        (!f.marca || e.marca_id === f.marca) &&
-        (!f.sede || e.sede_id === f.sede),
-    );
-  }, [especial.data, texto, f.tipo, f.marca, f.sede]);
-
-  const total = tab === "activos" ? (q.data?.total ?? 0) : listaEsp.length;
+  const total = q.data?.total ?? 0;
   const lista = q.data?.filas ?? [];
   const conteo = conteoQ.data ?? {
     activos: 0,
@@ -453,10 +460,10 @@ function Equipos() {
       {tab !== "activos" ? (
         <ListaEspecial
           tab={tab}
-          lista={listaEsp.slice(pag.desde, pag.desde + pag.tamano)}
-          todos={listaEsp}
-          cargando={especial.isLoading}
+          lista={lista}
+          cargando={q.isLoading}
           puedeEditar={!!me?.can("equipos_editar")}
+          filtrosActuales={filtros}
         />
       ) : (
         <div
@@ -596,33 +603,31 @@ type Eq = {
 function ListaEspecial({
   tab,
   lista,
-  todos,
   cargando,
   puedeEditar,
+  filtrosActuales,
 }: {
   tab: "en_reparacion" | "en_alistamiento" | "de_baja";
   lista: Eq[];
-  todos: Eq[];
   cargando: boolean;
   puedeEditar: boolean;
+  filtrosActuales: { tipo: string; marca: string; sede: string; texto: string };
 }) {
   const cat = useCatalogos();
   const nav = useNavigate();
+  const [exportando, setExportando] = useState(false);
+  const ids = lista.map((e) => e.id);
   const hq = useQuery({
-    queryKey: ["equipos", "eventos", tab, todos.length],
-    enabled: todos.length > 0,
+    queryKey: ["equipos", "eventos", tab, ids.join(",")],
+    enabled: ids.length > 0,
     queryFn: async () => {
-      const ids = todos.map((e) => e.id);
-      const filas: { equipo_id: string; detalle: string | null; created_at: string; user_id: string | null }[] = [];
-      for (let i = 0; i < ids.length; i += 200) {
-        const { data } = await supabase
-          .from("equipo_historial")
-          .select("equipo_id, detalle, created_at, user_id")
-          .eq("evento", tab)
-          .in("equipo_id", ids.slice(i, i + 200))
-          .order("created_at", { ascending: false });
-        filas.push(...(data ?? []));
-      }
+      const { data } = await supabase
+        .from("equipo_historial")
+        .select("equipo_id, detalle, created_at, user_id")
+        .eq("evento", tab)
+        .in("equipo_id", ids)
+        .order("created_at", { ascending: false });
+      const filas = data ?? [];
       const ultimo: Record<string, (typeof filas)[number]> = {};
       for (const r of filas) if (!ultimo[r.equipo_id]) ultimo[r.equipo_id] = r;
       const uids = [...new Set(Object.values(ultimo).map((r) => r.user_id).filter(Boolean))] as string[];
@@ -644,57 +649,118 @@ function ListaEspecial({
     };
   };
   async function exportar() {
-    const XLSX = await import("xlsx");
-    const filas = todos.map((e) => {
-      const i = info(e.id);
-      const emp = (e.empleado as { nombre: string } | null)?.nombre ?? "";
-      return sanitizarFilaExcel(
-        tab === "en_reparacion"
-          ? {
-              Serie: e.serie,
-              "Activo fijo": e.activo_fijo ?? "",
-              Tipo: cat.nombre(e.tipo_id),
-              Marca: cat.nombre(e.marca_id),
-              Modelo: e.modelo ?? "",
-              Empleado: emp,
-              Desde: i.fecha,
-              Motivo: i.motivo,
-            }
-          : {
-              Serie: e.serie,
-              "Activo fijo": e.activo_fijo ?? "",
-              Tipo: cat.nombre(e.tipo_id),
-              Marca: cat.nombre(e.marca_id),
-              Modelo: e.modelo ?? "",
-              "Último responsable": i.anterior,
-              "Fecha de baja": i.fecha,
-              Motivo: i.motivo,
-              "Dado de baja por": i.por,
-            },
+    setExportando(true);
+    try {
+      toast.info("Generando reporte de exportación…");
+      let s = supabase
+        .from("equipos")
+        .select("*, empleado:empleados(id, nombre)")
+        .eq("estado", tab);
+      if (filtrosActuales.tipo) s = s.eq("tipo_id", filtrosActuales.tipo);
+      if (filtrosActuales.marca) s = s.eq("marca_id", filtrosActuales.marca);
+      if (filtrosActuales.sede) s = s.eq("sede_id", filtrosActuales.sede);
+      if (filtrosActuales.texto) {
+        const { data: emps } = await supabase.from("empleados").select("id").ilike("nombre", `%${filtrosActuales.texto}%`).limit(200);
+        const conds = [
+          `serie.ilike.%${filtrosActuales.texto}%`,
+          `activo_fijo.ilike.%${filtrosActuales.texto}%`,
+          `modelo.ilike.%${filtrosActuales.texto}%`,
+          `nombre_equipo.ilike.%${filtrosActuales.texto}%`,
+        ];
+        if (emps?.length) conds.push(`empleado_id.in.(${emps.map((e) => e.id).join(",")})`);
+        s = s.or(conds.join(","));
+      }
+      const { data: items, error } = await s.order("updated_at", { ascending: false }).limit(2000);
+      if (error) throw error;
+      if (!items?.length) return toast.info("No hay registros para exportar");
+
+      const itemIds = items.map((e) => e.id);
+      const filasHist: { equipo_id: string; detalle: string | null; created_at: string; user_id: string | null }[] = [];
+      for (let i = 0; i < itemIds.length; i += 200) {
+        const { data } = await supabase
+          .from("equipo_historial")
+          .select("equipo_id, detalle, created_at, user_id")
+          .eq("evento", tab)
+          .in("equipo_id", itemIds.slice(i, i + 200))
+          .order("created_at", { ascending: false });
+        filasHist.push(...(data ?? []));
+      }
+      const ultimo: Record<string, (typeof filasHist)[number]> = {};
+      for (const r of filasHist) if (!ultimo[r.equipo_id]) ultimo[r.equipo_id] = r;
+      const uids = [...new Set(Object.values(ultimo).map((r) => r.user_id).filter(Boolean))] as string[];
+      const { data: ps } = uids.length
+        ? await supabase.from("profiles").select("id, nombre, email").in("id", uids)
+        : { data: [] };
+      const usuarios = Object.fromEntries((ps ?? []).map((p) => [p.id, p.nombre || p.email]));
+
+      const getInfo = (id: string) => {
+        const r = ultimo[id];
+        const d = r?.detalle ?? "";
+        return {
+          fecha: r ? fmtFecha(r.created_at) : "—",
+          motivo: d.match(/Motivo:\s*(.*)$/)?.[1] ?? "—",
+          anterior: d.match(/Responsable:\s*(.*?)\s*→/)?.[1] ?? "—",
+          por: r?.user_id ? (usuarios[r.user_id] ?? "Usuario") : "—",
+        };
+      };
+
+      const XLSX = await import("xlsx");
+      const filas = items.map((e) => {
+        const i = getInfo(e.id);
+        const emp = (e.empleado as { nombre: string } | null)?.nombre ?? "";
+        return sanitizarFilaExcel(
+          tab === "en_reparacion"
+            ? {
+                Serie: e.serie,
+                "Activo fijo": e.activo_fijo ?? "",
+                Tipo: cat.nombre(e.tipo_id),
+                Marca: cat.nombre(e.marca_id),
+                Modelo: e.modelo ?? "",
+                Empleado: emp,
+                Desde: i.fecha,
+                Motivo: i.motivo,
+              }
+            : {
+                Serie: e.serie,
+                "Activo fijo": e.activo_fijo ?? "",
+                Tipo: cat.nombre(e.tipo_id),
+                Marca: cat.nombre(e.marca_id),
+                Modelo: e.modelo ?? "",
+                "Último responsable": i.anterior,
+                "Fecha de baja": i.fecha,
+                Motivo: i.motivo,
+                "Dado de baja por": i.por,
+              },
+        );
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(
+        wb,
+        XLSX.utils.json_to_sheet(filas),
+        tab === "en_reparacion" ? "En reparación" : tab === "en_alistamiento" ? "En alistamiento" : "Dados de baja",
       );
-    });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.json_to_sheet(filas),
-      tab === "en_reparacion" ? "En reparación" : tab === "en_alistamiento" ? "En alistamiento" : "Dados de baja",
-    );
-    XLSX.writeFile(
-      wb,
-      tab === "en_reparacion"
-        ? "equipos-en-reparacion.xlsx"
-        : tab === "en_alistamiento"
-          ? "equipos-en-alistamiento.xlsx"
-          : "equipos-dados-de-baja.xlsx",
-    );
+      XLSX.writeFile(
+        wb,
+        tab === "en_reparacion"
+          ? "equipos-en-reparacion.xlsx"
+          : tab === "en_alistamiento"
+            ? "equipos-en-alistamiento.xlsx"
+            : "equipos-dados-de-baja.xlsx",
+      );
+      toast.success("Archivo Excel exportado exitosamente");
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setExportando(false);
+    }
   }
   const th = "px-4 py-2.5";
   return (
     <div>
       <div className="mb-2 flex justify-end">
-        <Button variant="outline" size="sm" onClick={exportar} disabled={!todos.length}>
+        <Button variant="outline" size="sm" onClick={exportar} disabled={exportando || !lista.length}>
           <Download className="mr-1 h-3.5 w-3.5" />
-          Exportar a Excel
+          {exportando ? "Exportando…" : "Exportar a Excel"}
         </Button>
       </div>
       <div className="overflow-x-auto rounded-xl border border-border/80 bg-card shadow-2xs">

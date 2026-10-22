@@ -1,4 +1,4 @@
-import { createFileRoute, Link, Outlet, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, redirect, useNavigate, useRouterState, useBlocker } from "@tanstack/react-router";
 import { CampanaAlertas } from "@/components/StockAlertas";
 import { CommandPalette, openCommandPalette } from "@/components/CommandPalette";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,9 +7,12 @@ import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import { meQuery, useMe } from "@/lib/me";
 import { catalogosQuery } from "@/lib/catalogos";
+import { useCargaMasivaStore } from "@/lib/cargaMasivaStore";
 import { obtenerConfigPortal } from "@/lib/ajustes.functions";
 import type { Permiso } from "@/lib/constantes";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
 import {
   LayoutDashboard,
   Laptop,
@@ -37,18 +40,37 @@ import {
   ScrollText,
   Search,
   ShieldAlert,
+  AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 export const IDLE_CONFIG_EVENT = "finesa:idle-config-changed";
 export const IDLE_STORAGE_KEY = "finesa-idle-min";
+export const LAST_ACTIVITY_KEY = "finesa-last-activity";
 
 export function leerMinutosInactividad(): number {
   if (typeof window === "undefined") return 30;
-  const raw = Number(localStorage.getItem(IDLE_STORAGE_KEY));
-  if (raw === 0 || raw === 15 || raw === 30 || raw === 60) return raw;
+  const raw = localStorage.getItem(IDLE_STORAGE_KEY);
+  if (raw === null) return 30;
+  const val = Number(raw);
+  if (Number.isFinite(val) && val >= 0) return val;
   return 30;
+}
+
+export function leerUltimaActividad(): number {
+  if (typeof window === "undefined") return Date.now();
+  const raw = localStorage.getItem(LAST_ACTIVITY_KEY);
+  const val = Number(raw);
+  if (Number.isFinite(val) && val > 0) return val;
+  const now = Date.now();
+  localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
+  return now;
+}
+
+export function registrarActividadGlobal(): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
 }
 
 export const Route = createFileRoute("/_authenticated")({
@@ -99,10 +121,49 @@ function Shell() {
   const lastActivityRef = useRef<number>(Date.now());
   const cargando = useRouterState({ select: (s) => s.status === "pending" });
   const path = useRouterState({ select: (s) => s.location.pathname });
+  const cargaMasiva = useCargaMasivaStore();
+
+  const blocker = useBlocker({
+    shouldBlockFn: ({ next }) => {
+      if (cargaMasiva.fase === "procesando" && next.pathname !== "/carga-masiva") {
+        return true;
+      }
+      return false;
+    },
+    withResolver: true,
+    enableBeforeUnload: () => cargaMasiva.fase === "procesando",
+  });
+
+  // Sincronización en tiempo real (Supabase Realtime) para actualizar automáticamente paneles y repositorios
+  useEffect(() => {
+    const ch = supabase
+      .channel("inventario-cambios-globales")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "actas" },
+        () => {
+          void qc.invalidateQueries({ queryKey: ["actas"] });
+          void qc.invalidateQueries({ queryKey: ["panel"] });
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "equipos" },
+        () => {
+          void qc.invalidateQueries({ queryKey: ["equipos"] });
+          void qc.invalidateQueries({ queryKey: ["panel"] });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+  }, [qc]);
 
   const registrarActividad = useCallback(() => {
-    lastActivityRef.current = Date.now();
-    setIdleRestanteSeg((prev) => (prev !== null ? null : prev));
+    registrarActividadGlobal();
+    setIdleRestanteSeg(null);
   }, []);
 
   useEffect(() => {
@@ -113,7 +174,7 @@ function Shell() {
     }
     setIdleMin(leerMinutosInactividad());
     const onIdleCfg = () => {
-      lastActivityRef.current = Date.now();
+      registrarActividadGlobal();
       setIdleRestanteSeg(null);
       setIdleMin(leerMinutosInactividad());
     };
@@ -155,27 +216,72 @@ function Shell() {
       setIdleRestanteSeg(null);
       return;
     }
+    const limitMs = idleMin * 60_000;
+    let saliendo = false;
+
+    const verificarYSalirSiExpiro = (): boolean => {
+      if (saliendo) return true;
+      const last = leerUltimaActividad();
+      const elapsed = Date.now() - last;
+      if (elapsed >= limitMs) {
+        saliendo = true;
+        setIdleRestanteSeg(null);
+        toast.info("Su sesión se cerró automáticamente por inactividad.");
+        void salir(`Cierre automático por inactividad (${idleMin} min)`);
+        return true;
+      }
+      return false;
+    };
+
+    if (verificarYSalirSiExpiro()) return;
+
     let lastTouch = 0;
     const onEvent = () => {
       const now = Date.now();
-      if (now - lastTouch < 2000) return;
+      // 1. Antes de renovar actividad, validar si ya expiró el tiempo
+      if (verificarYSalirSiExpiro()) return;
+
+      // 2. Throttle para no escribir a localStorage excesivamente
+      if (now - lastTouch < 1500) return;
       lastTouch = now;
-      lastActivityRef.current = now;
+      registrarActividadGlobal();
       setIdleRestanteSeg((prev) => (prev !== null ? null : prev));
     };
-    const events = ["pointerdown", "keydown", "scroll", "touchstart"] as const;
+
+    const events = ["pointerdown", "keydown", "scroll", "touchstart", "click"] as const;
     events.forEach((ev) => window.addEventListener(ev, onEvent, { passive: true }));
 
-    const limitMs = idleMin * 60_000;
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        verificarYSalirSiExpiro();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === IDLE_STORAGE_KEY) {
+        setIdleMin(leerMinutosInactividad());
+      }
+      if (e.key === LAST_ACTIVITY_KEY) {
+        setIdleRestanteSeg((prev) => (prev !== null ? null : prev));
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
     const timer = window.setInterval(() => {
-      const elapsed = Date.now() - lastActivityRef.current;
+      if (saliendo) return;
+      const last = leerUltimaActividad();
+      const elapsed = Date.now() - last;
       const remainingMs = limitMs - elapsed;
       if (remainingMs <= 0) {
+        saliendo = true;
         window.clearInterval(timer);
+        setIdleRestanteSeg(null);
         toast.info("Su sesión se cerró automáticamente por inactividad.");
         void salir(`Cierre automático por inactividad (${idleMin} min)`);
       } else if (remainingMs <= 60_000) {
-        setIdleRestanteSeg(Math.ceil(remainingMs / 1000));
+        setIdleRestanteSeg(Math.max(1, Math.ceil(remainingMs / 1000)));
       } else {
         setIdleRestanteSeg((prev) => (prev !== null ? null : prev));
       }
@@ -183,6 +289,9 @@ function Shell() {
 
     return () => {
       events.forEach((ev) => window.removeEventListener(ev, onEvent));
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+      window.removeEventListener("storage", onStorage);
       window.clearInterval(timer);
     };
   }, [me, idleMin, salir]);
@@ -344,6 +453,52 @@ function Shell() {
           </Button>
         </div>
       )}
+
+      {/* Bloqueo de navegación durante Carga Masiva */}
+      <Dialog
+        open={blocker.status === "blocked"}
+        onOpenChange={(abierto) => {
+          if (!abierto && blocker.status === "blocked") blocker.reset?.();
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-warning">
+              <AlertTriangle className="h-5 w-5 text-warning shrink-0" />
+              Carga masiva en proceso ({cargaMasiva.pct}%)
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2 text-sm text-muted-foreground">
+            <p>
+              Hay una importación masiva en ejecución activa ({cargaMasiva.detallePaso || "guardando registros…"}).
+            </p>
+            <div className="rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-foreground">
+              <strong>Navegación restringida:</strong> No debe salir de la sección ni realizar operaciones paralelas hasta que la carga termine completamente, para evitar inconsistencias de inventario o asignaciones erróneas de equipos que aún no han terminado de registrarse.
+            </div>
+            <div className="space-y-1">
+              <Progress value={cargaMasiva.pct} className="h-2" />
+              <div className="flex justify-between text-[11px] text-muted-foreground">
+                <span>{cargaMasiva.detallePaso || "Procesando…"}</span>
+                <span className="font-mono">{cargaMasiva.pct}%</span>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                blocker.reset?.();
+                void nav({ to: "/carga-masiva" });
+              }}
+            >
+              Ir a pantalla de carga
+            </Button>
+            <Button onClick={() => blocker.reset?.()}>
+              Permanecer aquí
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {cargando && (
         <>
@@ -542,6 +697,29 @@ function Shell() {
         </header>
 
         <main className="mx-auto w-full max-w-[1440px] flex-1 p-4 sm:p-6 lg:p-8">
+          {cargaMasiva.fase === "procesando" && (
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-xs text-foreground shadow-xs animate-in fade-in">
+              <div className="flex items-center gap-3 min-w-0">
+                <Loader2 className="h-5 w-5 animate-spin text-warning shrink-0" />
+                <div className="min-w-0">
+                  <div className="font-semibold text-warning-foreground">
+                    Carga masiva en progreso: {cargaMasiva.pct}%
+                  </div>
+                  <div className="truncate text-muted-foreground">
+                    {cargaMasiva.detallePaso || "Guardando registros en la base de datos…"} · Navegación temporalmente protegida.
+                  </div>
+                </div>
+              </div>
+              {path !== "/carga-masiva" && (
+                <Link
+                  to="/carga-masiva"
+                  className="shrink-0 rounded-lg bg-warning px-3.5 py-1.5 text-xs font-semibold text-warning-foreground transition-colors hover:bg-warning/90"
+                >
+                  Volver a pantalla de carga
+                </Link>
+              )}
+            </div>
+          )}
           <Outlet />
         </main>
       </div>

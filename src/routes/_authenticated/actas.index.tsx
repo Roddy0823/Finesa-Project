@@ -1,15 +1,14 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { useMemo, useState } from "react";
-import { z } from "zod";
+import { useEffect, useState } from "react";
 
 import { supabase } from "@/integrations/supabase/client";
 import { useMe } from "@/lib/me";
-import { fetchAll } from "@/lib/fetchAll";
-import { TIPO_ACTA, ESTADO_ACTA, fmtFecha, errMsg } from "@/lib/constantes";
-import { urlArchivo } from "@/lib/firmas.functions";
+import { TIPO_ACTA, errMsg, fmtFecha } from "@/lib/constantes";
+import { urlArchivo, crearEnlaceFirma } from "@/lib/firmas.functions";
 import { descargarPdfActa } from "@/lib/descargarPdf";
+import { copiarTexto } from "@/lib/utils";
 import { DataTablePagination, FilasSkeleton, usePaginacion } from "@/components/DataTablePagination";
 import { PageHeader, EstadoActa } from "@/components/Estado";
 import { Input } from "@/components/ui/input";
@@ -18,11 +17,31 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Ban, Download, FileArchive, Plus, Search, X, ChevronRight } from "lucide-react";
+import { Ban, Download, FileArchive, Plus, Search, X, ChevronRight, Copy, PenLine } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/_authenticated/actas/")({
-  validateSearch: z.object({ estado: z.string().optional() }),
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): {
+    estado?: string | undefined;
+    tipo?: string | undefined;
+    tecnico?: string | undefined;
+    desde?: string | undefined;
+    hasta?: string | undefined;
+    q?: string | undefined;
+    page?: number | undefined;
+    pageSize?: number | undefined;
+  } => ({
+    estado: typeof s.estado === "string" ? s.estado : undefined,
+    tipo: typeof s.tipo === "string" ? s.tipo : undefined,
+    tecnico: typeof s.tecnico === "string" ? s.tecnico : undefined,
+    desde: typeof s.desde === "string" ? s.desde : undefined,
+    hasta: typeof s.hasta === "string" ? s.hasta : undefined,
+    q: typeof s.q === "string" ? s.q : undefined,
+    page: typeof s.page === "number" ? s.page : Number(s.page) || undefined,
+    pageSize: typeof s.pageSize === "number" ? s.pageSize : Number(s.pageSize) || undefined,
+  }),
   head: () => ({
     meta: [{ title: "Repositorio de actas — Finesa" }, { name: "description", content: "Listado centralizado de actas." }],
   }),
@@ -42,6 +61,7 @@ type Fila = {
 };
 
 const MAX_ZIP = 100;
+const limpiar = (t: string) => t.replace(/[%,()*\\]/g, " ").trim();
 
 function Repositorio() {
   const search = Route.useSearch();
@@ -49,78 +69,165 @@ function Repositorio() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const url = useServerFn(urlArchivo);
-  const [f, setF] = useState({
-    desde: "",
-    hasta: "",
-    empleado: "",
-    tecnico: "",
-    tipo: "",
-    estado: search.estado ?? "",
-  });
+  const enlace = useServerFn(crearEnlaceFirma);
+
+  const estado = search.estado ?? "";
+  const tipo = search.tipo ?? "";
+  const tecnico = search.tecnico ?? "";
+  const desde = search.desde ?? "";
+  const hasta = search.hasta ?? "";
+  const qParam = search.q ?? "";
+
+  const [textoInput, setTextoInput] = useState(qParam);
+
+  useEffect(() => {
+    setTextoInput(qParam);
+  }, [qParam]);
+
+  useEffect(() => {
+    const h = setTimeout(() => {
+      const limpio = limpiar(textoInput);
+      if (limpio !== qParam) {
+        void nav({
+          to: "/actas",
+          search: (prev) => ({
+            ...prev,
+            q: limpio || undefined,
+            page: undefined,
+          }),
+          replace: true,
+        });
+      }
+    }, 250);
+    return () => clearTimeout(h);
+  }, [textoInput, qParam, nav]);
+
   const [sel, setSel] = useState<string[]>([]);
   const [anular, setAnular] = useState<Fila | null>(null);
   const [zipando, setZipando] = useState(false);
-  const pag = usePaginacion(f);
 
-  const q = useQuery({
-    queryKey: ["actas", "repo"],
-    queryFn: () =>
-      fetchAll((a, b) =>
-        supabase
-          .from("actas")
-          .select(
-            "id, numero, tipo, estado, created_at, firmado_at, pdf_path, tecnico_nombre, empleado:empleados(nombre, identificacion)",
-          )
-          .order("created_at", { ascending: false })
-          .order("id")
-          .range(a, b),
-      ) as Promise<Fila[]>,
+  const filtros = { desde, hasta, texto: qParam, tecnico, tipo, estado };
+  const pag = usePaginacion(filtros, search.pageSize ?? 25);
+
+  const conteoQ = useQuery({
+    queryKey: ["actas", "conteos"],
+    staleTime: 0,
+    refetchOnMount: "always",
+    queryFn: async () => {
+      try {
+        const { data, error } = await supabase.rpc("panel_conteos_actas");
+        if (!error && data && Array.isArray(data) && data.length > 0) {
+          const c: Record<string, number> = {};
+          let total = 0;
+          for (const r of data as { estado: string; total: number }[]) {
+            const val = Number(r.total);
+            c[r.estado] = val;
+            total += val;
+          }
+          return {
+            todas: total,
+            pendiente: c.pendiente ?? 0,
+            firmada: c.firmada ?? 0,
+            anulada: c.anulada ?? 0,
+          };
+        }
+      } catch {
+        /* fallback si aún no existe la función en la réplica local */
+      }
+      const [todas, pendiente, firmada, anulada] = await Promise.all([
+        supabase.from("actas").select("id", { count: "exact", head: true }),
+        supabase.from("actas").select("id", { count: "exact", head: true }).eq("estado", "pendiente"),
+        supabase.from("actas").select("id", { count: "exact", head: true }).eq("estado", "firmada"),
+        supabase.from("actas").select("id", { count: "exact", head: true }).eq("estado", "anulada"),
+      ]);
+      return {
+        todas: todas.count ?? 0,
+        pendiente: pendiente.count ?? 0,
+        firmada: firmada.count ?? 0,
+        anulada: anulada.count ?? 0,
+      };
+    },
   });
 
-  const conteos = useMemo(() => {
-    const all = q.data ?? [];
-    return {
-      todas: all.length,
-      pendiente: all.filter((x) => x.estado === "pendiente").length,
-      firmada: all.filter((x) => x.estado === "firmada").length,
-      anulada: all.filter((x) => x.estado === "anulada").length,
-    };
-  }, [q.data]);
+  const tecnicosQ = useQuery({
+    queryKey: ["actas", "tecnicos-lista"],
+    queryFn: async () => {
+      const { data } = await supabase.from("profiles").select("nombre, email").order("nombre");
+      return [...new Set((data ?? []).map((p) => p.nombre || p.email).filter(Boolean))] as string[];
+    },
+  });
 
-  const filas = useMemo(() => {
-    const t = f.empleado.toLowerCase(),
-      tc = f.tecnico.toLowerCase();
-    return (q.data ?? []).filter(
-      (a) =>
-        (!f.tipo || a.tipo === f.tipo) &&
-        (!f.estado || a.estado === f.estado) &&
-        (!f.desde || a.created_at >= f.desde) &&
-        (!f.hasta || a.created_at <= f.hasta + "T23:59:59") &&
-        (!t ||
-          String(a.numero).includes(t) ||
-          (a.empleado && (a.empleado.nombre.toLowerCase().includes(t) || a.empleado.identificacion.includes(t)))) &&
-        (!tc || (a.tecnico_nombre ?? "").toLowerCase().includes(tc)),
-    );
-  }, [q.data, f]);
-  const tecnicos = useMemo(
-    () => [...new Set((q.data ?? []).map((a) => a.tecnico_nombre).filter(Boolean) as string[])].sort(),
-    [q.data],
-  );
+  const q = useQuery({
+    queryKey: ["actas", "repo-paginado", filtros, pag.desde, pag.tamano],
+    staleTime: 0,
+    refetchOnMount: "always",
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
+      let s = supabase
+        .from("actas")
+        .select(
+          "id, numero, tipo, estado, created_at, firmado_at, pdf_path, tecnico_nombre, empleado:empleados(nombre, identificacion)",
+          { count: "exact" },
+        );
 
-  const pagina = filas.slice(pag.desde, pag.desde + pag.tamano);
+      if (estado) s = s.eq("estado", estado as "pendiente");
+      if (tipo) s = s.eq("tipo", tipo as "entrega");
+      if (desde) s = s.gte("created_at", desde);
+      if (hasta) s = s.lte("created_at", hasta + "T23:59:59");
+      if (tecnico) s = s.ilike("tecnico_nombre", `%${tecnico}%`);
+
+      if (qParam) {
+        const { data: emps } = await supabase
+          .from("empleados")
+          .select("id")
+          .or(`nombre.ilike.%${qParam}%,identificacion.ilike.%${qParam}%`)
+          .limit(100);
+        const conds: string[] = [];
+        const num = Number(qParam);
+        if (!isNaN(num) && num > 0) conds.push(`numero.eq.${num}`);
+        if (emps?.length) conds.push(`empleado_id.in.(${emps.map((e) => e.id).join(",")})`);
+        if (conds.length) {
+          s = s.or(conds.join(","));
+        } else {
+          return { filas: [] as Fila[], total: 0 };
+        }
+      }
+
+      const { data, count, error } = await s
+        .order("created_at", { ascending: false })
+        .order("id")
+        .range(pag.desde, pag.hasta);
+
+      if (error) throw error;
+      return { filas: (data ?? []) as Fila[], total: count ?? 0 };
+    },
+  });
+
+  const conteos = conteoQ.data ?? { todas: 0, pendiente: 0, firmada: 0, anulada: 0 };
+  const filas = q.data?.filas ?? [];
+  const total = q.data?.total ?? 0;
+  const tecnicos = tecnicosQ.data ?? [];
+
   const puedeVer = me?.can("repositorio_ver");
   const descargables = filas.filter((a) => a.pdf_path);
   const todos = descargables.length > 0 && descargables.every((a) => sel.includes(a.id));
 
   async function zip() {
-    const elegidas = (q.data ?? []).filter((a) => sel.includes(a.id) && a.pdf_path);
-    if (!elegidas.length) return;
-    if (elegidas.length > MAX_ZIP) return toast.error(`Máximo ${MAX_ZIP} actas por descarga.`);
+    if (!sel.length) return;
+    if (sel.length > MAX_ZIP) return toast.error(`Máximo ${MAX_ZIP} actas por descarga.`);
     setZipando(true);
     try {
+      const { data: elegidas, error } = await supabase
+        .from("actas")
+        .select("id, numero, tipo, pdf_path")
+        .in("id", sel);
+      if (error) throw error;
+      const conPdf = (elegidas ?? []).filter((a) => a.pdf_path);
+      if (!conPdf.length) throw new Error("Las actas seleccionadas no cuentan con PDF disponible.");
+
       const { default: JSZip } = await import("jszip");
       const z = new JSZip();
-      for (const a of elegidas) {
+      for (const a of conPdf) {
         const r = await url({ data: { actaId: a.id } });
         const res = await fetch(r.url);
         if (!res.ok) throw new Error(`No se pudo descargar el acta #${a.numero}`);
@@ -137,7 +244,7 @@ function Repositorio() {
       setTimeout(() => URL.revokeObjectURL(o), 5000);
       await supabase.rpc("log_evento", {
         p_accion: "DESCARGA_MASIVA",
-        p_detalle: `Actas: ${elegidas.map((a) => a.numero).join(", ")}`,
+        p_detalle: `Actas: ${conPdf.map((a) => a.numero).join(", ")}`,
       });
       setSel([]);
     } catch (e) {
@@ -149,7 +256,7 @@ function Repositorio() {
 
   const s =
     "h-9 rounded-lg border border-input bg-card/70 px-3 text-xs font-medium text-foreground shadow-2xs transition-colors hover:border-border focus:border-primary/60 focus:outline-none";
-  const hayFiltros = Boolean(f.desde || f.hasta || f.empleado || f.tecnico || f.tipo || f.estado);
+  const hayFiltros = Boolean(desde || hasta || qParam || tecnico || tipo || estado);
 
   return (
     <div className="space-y-4">
@@ -175,12 +282,18 @@ function Repositorio() {
               ["anulada", "Anuladas", conteos.anulada],
             ] as const
           ).map(([val, label, count]) => {
-            const active = f.estado === val;
+            const active = estado === val;
             return (
               <button
                 key={val}
                 type="button"
-                onClick={() => setF({ ...f, estado: val })}
+                onClick={() =>
+                  nav({
+                    to: "/actas",
+                    search: (prev) => ({ ...prev, estado: val || undefined, page: undefined }),
+                    replace: true,
+                  })
+                }
                 className={cn(
                   "inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all",
                   active
@@ -227,20 +340,38 @@ function Repositorio() {
           <Input
             placeholder="Empleado, cédula o #acta…"
             className="pl-8 pr-8"
-            value={f.empleado}
-            onChange={(e) => setF({ ...f, empleado: e.target.value })}
+            value={textoInput}
+            onChange={(e) => setTextoInput(e.target.value)}
           />
-          {f.empleado && (
+          {textoInput && (
             <button
               type="button"
-              onClick={() => setF({ ...f, empleado: "" })}
+              onClick={() => {
+                setTextoInput("");
+                void nav({
+                  to: "/actas",
+                  search: (prev) => ({ ...prev, q: undefined, page: undefined }),
+                  replace: true,
+                });
+              }}
               className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           )}
         </div>
-        <select className={s} value={f.tipo} onChange={(e) => setF({ ...f, tipo: e.target.value })} aria-label="Tipo">
+        <select
+          className={s}
+          value={tipo}
+          onChange={(e) =>
+            nav({
+              to: "/actas",
+              search: (prev) => ({ ...prev, tipo: e.target.value || undefined, page: undefined }),
+              replace: true,
+            })
+          }
+          aria-label="Tipo"
+        >
           <option value="">Todos los tipos</option>
           {Object.entries(TIPO_ACTA).map(([k, v]) => (
             <option key={k} value={k}>
@@ -250,8 +381,14 @@ function Repositorio() {
         </select>
         <select
           className={s}
-          value={f.tecnico}
-          onChange={(e) => setF({ ...f, tecnico: e.target.value })}
+          value={tecnico}
+          onChange={(e) =>
+            nav({
+              to: "/actas",
+              search: (prev) => ({ ...prev, tecnico: e.target.value || undefined, page: undefined }),
+              replace: true,
+            })
+          }
           aria-label="Técnico"
         >
           <option value="">Todos los técnicos</option>
@@ -264,22 +401,37 @@ function Repositorio() {
         <Input
           type="date"
           className="w-auto text-xs"
-          value={f.desde}
-          onChange={(e) => setF({ ...f, desde: e.target.value })}
+          value={desde}
+          onChange={(e) =>
+            nav({
+              to: "/actas",
+              search: (prev) => ({ ...prev, desde: e.target.value || undefined, page: undefined }),
+              replace: true,
+            })
+          }
           aria-label="Desde"
         />
         <Input
           type="date"
           className="w-auto text-xs"
-          value={f.hasta}
-          onChange={(e) => setF({ ...f, hasta: e.target.value })}
+          value={hasta}
+          onChange={(e) =>
+            nav({
+              to: "/actas",
+              search: (prev) => ({ ...prev, hasta: e.target.value || undefined, page: undefined }),
+              replace: true,
+            })
+          }
           aria-label="Hasta"
         />
         {hayFiltros && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setF({ desde: "", hasta: "", empleado: "", tecnico: "", tipo: "", estado: "" })}
+            onClick={() => {
+              setTextoInput("");
+              void nav({ to: "/actas", search: {}, replace: true });
+            }}
             className="gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
             <X className="h-3.5 w-3.5" />
@@ -289,7 +441,7 @@ function Repositorio() {
       </div>
 
       {/* Table */}
-      <div className="overflow-x-auto rounded-xl border border-border/80 bg-card shadow-2xs">
+      <div className={cn("overflow-x-auto rounded-xl border border-border/80 bg-card shadow-2xs transition-opacity", q.isFetching && !q.isLoading ? "opacity-60" : "")}>
         <table className="w-full text-sm">
           <thead className="border-b border-border/70 bg-muted/35 text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             <tr>
@@ -298,7 +450,13 @@ function Repositorio() {
                   <Checkbox
                     aria-label="Seleccionar todas"
                     checked={todos}
-                    onCheckedChange={(c) => setSel(c ? descargables.slice(0, MAX_ZIP).map((a) => a.id) : [])}
+                    onCheckedChange={(c) =>
+                      setSel(
+                        c
+                          ? Array.from(new Set([...sel, ...descargables.slice(0, MAX_ZIP).map((a) => a.id)]))
+                          : sel.filter((id) => !filas.some((a) => a.id === id)),
+                      )
+                    }
                   />
                 )}
               </th>
@@ -314,7 +472,7 @@ function Repositorio() {
           </thead>
           <tbody className="divide-y divide-border/60">
             {q.isLoading && <FilasSkeleton columnas={9} />}
-            {pagina.map((a) => (
+            {filas.map((a) => (
               <tr
                 key={a.id}
                 onClick={() => nav({ to: "/actas/$id", params: { id: a.id } })}
@@ -348,12 +506,50 @@ function Repositorio() {
                 </td>
                 <td className="px-4 py-2.5 text-xs text-muted-foreground">{a.tecnico_nombre ?? "—"}</td>
                 <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{fmtFecha(a.created_at)}</td>
-                <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{fmtFecha(a.firmado_at, true)}</td>
+                <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                  {a.firmado_at ? (
+                    fmtFecha(a.firmado_at, true)
+                  ) : (
+                    <span className="text-[11px] font-medium text-warning">Pendiente de firma</span>
+                  )}
+                </td>
                 <td className="px-4 py-2.5">
                   <EstadoActa estado={a.estado} />
                 </td>
                 <td className="whitespace-nowrap px-4 py-2.5 text-right" onClick={(ev) => ev.stopPropagation()}>
                   <div className="inline-flex items-center gap-1">
+                    {a.estado === "pendiente" && me?.can("firmas_capturar") && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Copiar enlace de firma"
+                        onClick={async () => {
+                          try {
+                            const r = await enlace({ data: { actaId: a.id } });
+                            const link = `${window.location.origin}/firmar/${r.token}`;
+                            const copiado = await copiarTexto(link);
+                            if (copiado) toast.success("Enlace de firma copiado (48 h)");
+                            else toast.info("Enlace generado (48 h)");
+                          } catch (err) {
+                            toast.error(errMsg(err));
+                          }
+                        }}
+                        aria-label="Copiar enlace de firma"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                    )}
+                    {a.estado === "pendiente" && me?.can("firmas_capturar") && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Firma presencial"
+                        onClick={() => nav({ to: "/actas/$id", params: { id: a.id } })}
+                        aria-label="Firma presencial"
+                      >
+                        <PenLine className="h-4 w-4" />
+                      </Button>
+                    )}
                     {a.pdf_path && puedeVer && (
                       <Button
                         size="icon"
@@ -395,19 +591,30 @@ function Repositorio() {
         </table>
       </div>
       <DataTablePagination
-        total={filas.length}
+        total={total}
         pagina={pag.pagina}
         tamano={pag.tamano}
-        onPagina={pag.setPagina}
-        onTamano={pag.setTamano}
+        onPagina={(p) =>
+          nav({
+            to: "/actas",
+            search: (prev) => ({ ...prev, page: p > 1 ? p : undefined }),
+            replace: true,
+          })
+        }
+        onTamano={(t) =>
+          nav({
+            to: "/actas",
+            search: (prev) => ({ ...prev, pageSize: t !== 25 ? t : undefined, page: undefined }),
+            replace: true,
+          })
+        }
       />
       <AnularDialog
         acta={anular}
         onClose={() => setAnular(null)}
         onDone={() => {
           setAnular(null);
-          qc.invalidateQueries({ queryKey: ["actas"] });
-          qc.invalidateQueries({ queryKey: ["equipos"] });
+          ["actas", "panel", "equipos"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
         }}
       />
     </div>

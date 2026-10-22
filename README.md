@@ -7,21 +7,25 @@ Plataforma corporativa integral para la gestión del ciclo de vida de activos te
 ## Características Principales
 
 ### 1. Gestión de Activos y Equipos de Cómputo
-- **Ciclo de vida completo**: Estados parametrizados (disponible, asignado, mantenimiento, baja, contingencia/préstamo con fecha límite).
+- **Ciclo de vida completo**: Estados parametrizados (disponible, asignado, en alistamiento, en reparación, de baja definitivo y contingencia/préstamo con fecha límite).
+- **Flujo de baja con soporte adjunto**: Proceso formal de desincorporación de activos fijos con soporte técnico o acta pericial adjunta (`baja_documento_path`), trazabilidad contable y enlaces firmados de consulta.
 - **Trazabilidad total**: Historial inmutable de movimientos auditado automáticamente mediante triggers en base de datos.
-- **Series y activos**: Verificación única de número de serie y placa de inventario corporativa.
+- **Series y activos**: Verificación única de número de serie y placa de inventario corporativa con corrección auditada exclusiva para el Administrador (`corregir_serie`).
 - **Gestión de garantías y proveedores**: Vinculación de equipos con órdenes de compra, contratos y fechas de cobertura.
+- **Paginación en servidor**: Consultas paginadas por rango (`.range()`) con conteos exactos y sincronización reactiva en la URL (búsqueda, estado, sede, marca, tipo y página).
 
-### 2. Actas Digitales con Firma Electrónica
+### 2. Actas Digitales con Firma Electrónica y Blindaje Criptográfico
 - **Tipos de acta soportados**:
   - **Entrega**: Asignación formal de equipos a empleados.
   - **Devolución**: Reintegro de equipos con liberación automática de responsabilidades.
   - **Cambio**: Movimiento bidireccional atómico (entrega de equipo nuevo y devolución del reemplazado bajo una misma firma).
   - **Préstamo / Contingencia**: Asignación temporal con fecha de vencimiento y alertas de mora.
-- **Firma electrónica**:
-  - Captura táctil / canvas para firma presencial de técnico y empleado.
+- **Firma electrónica y sellado criptográfico**:
+  - Captura táctil / canvas para firma presencial de técnico y empleado con validación estricta de Magic Bytes PNG en servidor.
   - Enlaces de firma remota con token criptográfico protegido en servidor.
-  - Generación de PDF oficial inmutable mediante `pdf-lib` en el servidor con marcas de tiempo, datos de auditoría e imagen de firmas incrustadas.
+  - Generación de PDF oficial 100% en servidor mediante `pdf-lib` con marcas de tiempo, datos de auditoría e imagen de firmas incrustadas.
+  - **Hash SHA-256 de integridad documental**: Sellado criptográfico del PDF firmado (`pdf_hash`), persistido en base de datos y registrado en auditoría.
+  - **Políticas WORM en Storage**: Reglas de inmutabilidad estricta (Write Once, Read Many) que impiden modificaciones (`UPDATE`) o eliminaciones (`DELETE`) de actas en storage.
 
 ### 3. Portal de Autoservicio del Empleado
 - **Autenticación sin fricción**: Ingreso seguro mediante número de cédula y PIN personal de 4 dígitos (protegido con HMAC y bloqueo tras 5 intentos fallidos).
@@ -37,11 +41,13 @@ Plataforma corporativa integral para la gestión del ciclo de vida de activos te
 
 ### 5. Carga Masiva Inteligente
 - Importación y actualización de catálogos, empleados, equipos y asignaciones mediante plantillas Excel (`.xlsx`).
-- Validación previa de integridad referencial, duplicados y dependencias antes de aplicar cambios en base de datos.
+- Pre-validación transaccional exhaustiva: cotejo de seriales duplicados, activos fijos y cédulas contra la base de datos y dentro del archivo antes del commit en lote.
+- Vista previa interactiva con desglose de filas válidas, existentes y con error, inserción en lotes de 200 y aislamiento automático ante inconsistencias.
 
-### 6. Catálogos Maestros y Auditoría
+### 6. Catálogos Maestros y Auditoría Ligera
 - **Catálogos cerrados**: Estandarización de marcas, modelos, tipos de equipo, sedes, áreas y empresas.
 - **Bitácora de auditoría inmutable**: Registro de eventos críticos (inicios de sesión, cambios de estado, firmas, anulaciones) bloqueados contra eliminación o modificación.
+- **Carga optimizada de auditoría**: Proyección en servidor de columnas ligeras con carga bajo demanda de diferencias `JSONB` (`antes` y `despues`) al expandir filas, eliminando transferencia masiva de datos en listas y exportación.
 
 ---
 
@@ -113,6 +119,28 @@ La aplicación estará disponible en `http://localhost:8080`.
 - `bun run preview`: Previsualiza la versión construida.
 - `bun run lint`: Ejecuta el análisis estático de código con ESLint.
 - `bun run format`: Aplica el formateador Prettier a los archivos del proyecto.
+- `bun run test`: Ejecuta la suite completa de pruebas automatizadas (140 pruebas: unitarias y RLS).
+- `bun run test:unit`: Ejecuta las pruebas unitarias de funciones críticas de servidor (`firmas.server`, `acceso-empleado.server`, `usuarios.functions`, `security.server`).
+- `bun run test:rls`: Ejecuta las pruebas de integración para políticas RLS, triggers y RPCs sobre Postgres en memoria (PGlite).
+
+---
+
+## Suite de Pruebas Automatizadas
+
+El proyecto cuenta con una batería de pruebas automatizadas configurada con [Vitest](https://vitest.dev/) y PostgreSQL embebido ([PGlite](https://pglite.dev/)):
+
+1. **Pruebas Unitarias de Servidor (`tests/unit/`)**:
+   - `firmas.server.test.ts`: Validación de DTOs de acta, generación de PDFs oficiales con `pdf-lib`, incrustación de firmas PNG y flujo completo de firma y auditoría.
+   - `acceso-empleado.server.test.ts`: Normalización de cédula, generación segura de PIN criptográfico de 4 dígitos y derivación de contraseñas internas mediante HMAC-SHA256 con secreto de servidor.
+   - `security.server.test.ts`: Rate limiting en memoria por IP/acción, política de contraseñas y validación estricta de Magic Bytes / chunks IHDR en imágenes de firmas.
+   - `usuarios.functions.test.ts`: Acciones de servidor para creación y edición de auxiliares, asignación de permisos, suspensión/reactivación, gestión de catálogos y portal del empleado.
+
+2. **Pruebas de Integración de RLS y Triggers (`tests/rls/`)**:
+   - `ecosistema.test.ts`: Aislamiento multi-ecosistema estricto vía `owner_id` y `my_owner_id()` (Admin A y Auxiliar A no ven ni modifican datos del Ecosistema B).
+   - `permisos-roles.test.ts`: Protección del rol admin (`user_roles_guard_admin`, índice único `user_roles_un_solo_admin`) y permisos granulares de actas y equipos.
+   - `equipos-triggers.test.ts`: Inmutabilidad del número de serie, bloqueo de transiciones de estado directas, generación automática de historial e imposición de regla de paz y salvo en el retiro de empleados.
+   - `portal-empleado.test.ts`: Visibilidad restringida del empleado (únicamente sus equipos asignados, sus actas firmadas y reporte de fallas de sus activos).
+   - `actas-auditoria.test.ts`: Inmutabilidad estricta de la bitácora de auditoría (bloqueo de `UPDATE`/`DELETE`), transiciones atómicas al firmar actas, sellado de `pdf_hash`, políticas WORM en storage y RPC `panel_conteos_actas`.
 
 ---
 

@@ -43,6 +43,8 @@ function Panel() {
   const stats = useQuery({
     queryKey: ["panel"],
     enabled: !!me?.isStaff,
+    staleTime: 0,
+    refetchOnMount: "always",
     queryFn: async () => {
       const [eq, pend, ult] = await Promise.all([
         supabase.rpc("panel_conteos"),

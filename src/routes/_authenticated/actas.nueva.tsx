@@ -1,6 +1,6 @@
 import { fetchAll } from "@/lib/fetchAll";
 import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { adjuntarFirmaTecnico, obtenerMiFirma } from "@/lib/ajustes.functions";
 import { useMemo, useState } from "react";
@@ -39,6 +39,7 @@ function NuevaActa() {
   const { data: me } = useMe();
   const cat = useCatalogos();
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [tipo, setTipo] = useState<"entrega" | "devolucion" | "cambio">(
     me?.can("actas_entrega") ? "entrega" : "devolucion",
   );
@@ -76,6 +77,18 @@ function NuevaActa() {
       ),
   });
 
+  const pendientesQ = useQuery({
+    queryKey: ["actas", "equipos-en-pendientes"],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("acta_items")
+        .select("equipo_id, acta:actas!inner(id, estado)")
+        .eq("acta.estado", "pendiente");
+      return new Set((data ?? []).map((x) => x.equipo_id));
+    },
+  });
+  const equiposEnPendiente = pendientesQ.data ?? new Set<string>();
+
   const empleados = (emps.data ?? []).filter(
     (e) =>
       (tipo === "devolucion" || e.activo) &&
@@ -86,6 +99,7 @@ function NuevaActa() {
     return (eqs.data ?? [])
       .filter(
         (e) =>
+          !equiposEnPendiente.has(e.id) &&
           (tipo === "entrega"
             ? e.estado === "disponible"
             : tipo === "devolucion"
@@ -97,7 +111,7 @@ function NuevaActa() {
           (!t || [e.serie, e.modelo, e.activo_fijo, e.nombre_equipo].some((v) => (v ?? "").toLowerCase().includes(t))),
       )
       .slice(0, 300);
-  }, [eqs.data, tipo, empleadoId, buscaEq, fTipo, fMarca, fSede]);
+  }, [eqs.data, equiposEnPendiente, tipo, empleadoId, buscaEq, fTipo, fMarca, fSede]);
   const eqPorId = useMemo(() => new Map((eqs.data ?? []).map((e) => [e.id, e])), [eqs.data]);
   const dirDe = (id: string) =>
     tipo === "cambio" ? (eqPorId.get(id)?.estado === "asignado" ? "devolucion" : "entrega") : tipo;
@@ -123,27 +137,36 @@ function NuevaActa() {
         .select("id")
         .single();
       if (error) throw error;
-      const { error: e2 } = await supabase.from("acta_items").insert(
-        sel.map((equipo_id) => {
-          const d = det[equipo_id];
-          const dir = dirDe(equipo_id);
-          return {
-            acta_id: acta.id,
-            equipo_id,
-            direccion: dir,
-            estado_destino: dir === "devolucion" ? (d?.destino ?? "disponible") : "disponible",
-            estado_fisico: d?.estado_fisico ?? "Bueno",
-            accesorios: d?.accesorios.trim() || null,
-            nota: d?.nota.trim() || null,
-          };
-        }),
-      );
-      if (e2) throw e2;
+
+      try {
+        const { error: e2 } = await supabase.from("acta_items").insert(
+          sel.map((equipo_id) => {
+            const d = det[equipo_id];
+            const dir = dirDe(equipo_id);
+            return {
+              acta_id: acta.id,
+              equipo_id,
+              direccion: dir,
+              estado_destino: dir === "devolucion" ? (d?.destino ?? "disponible") : "disponible",
+              estado_fisico: d?.estado_fisico ?? "Bueno",
+              accesorios: d?.accesorios.trim() || null,
+              nota: d?.nota.trim() || null,
+            };
+          }),
+        );
+        if (e2) throw e2;
+      } catch (errItems) {
+        // Revertir el encabezado del acta para no dejar registros huérfanos vacíos
+        await supabase.from("actas").delete().eq("id", acta.id);
+        throw errItems;
+      }
+
       try {
         await adjuntar({ data: { actaId: acta.id } });
       } catch {
         /* la firma del técnico es opcional */
       }
+      ["actas", "panel", "equipos"].forEach((k) => qc.invalidateQueries({ queryKey: [k] }));
       toast.success("Acta creada. Proceda con la firma.");
       nav({ to: "/actas/$id", params: { id: acta.id } });
     } catch (e) {

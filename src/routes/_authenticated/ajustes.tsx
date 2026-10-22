@@ -9,7 +9,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import { errMsg, fmtFecha } from "@/lib/constantes";
 import { copiarTexto, cn } from "@/lib/utils";
 import { actualizarNombre, borrarMiFirma, cambiarMiPassword, guardarMiFirma, obtenerMiFirma } from "@/lib/ajustes.functions";
-import { IDLE_CONFIG_EVENT, IDLE_STORAGE_KEY, leerMinutosInactividad } from "./route";
+import { IDLE_CONFIG_EVENT, IDLE_STORAGE_KEY, leerMinutosInactividad, registrarActividadGlobal } from "./route";
 import { PageHeader } from "@/components/Estado";
 import { Certificaciones } from "@/components/Certificaciones";
 import { ConfigPortalEmpleados } from "@/components/ConfigPortalEmpleados";
@@ -871,10 +871,11 @@ function SeguridadPanel({
   function actualizarInactividad(minutos: number) {
     setIdleMin(minutos);
     localStorage.setItem(IDLE_STORAGE_KEY, String(minutos));
+    registrarActividadGlobal();
     window.dispatchEvent(new CustomEvent(IDLE_CONFIG_EVENT));
     toast.success(
       minutos > 0
-        ? `Cierre automático configurado en ${minutos} minutos de inactividad`
+        ? `Cierre automático configurado en ${minutos} minuto(s) de inactividad`
         : "Cierre automático por inactividad desactivado en este navegador",
     );
   }
@@ -926,8 +927,10 @@ function SeguridadPanel({
 
   const evalPwd = evaluarFortalezaPassword(p1);
   const opcionesIdle = [
-    { min: 15, label: "15 minutos", desc: "Alta seguridad para equipos compartidos." },
-    { min: 30, label: "30 minutos", desc: "Equilibrio recomendado para operación diaria." },
+    { min: 2, label: "2 minutos", desc: "Prueba rápida de bloqueo (aviso a los 60 segundos)." },
+    { min: 5, label: "5 minutos", desc: "Seguridad estricta para puestos compartidos." },
+    { min: 15, label: "15 minutos", desc: "Alta seguridad recomendada para estaciones públicas." },
+    { min: 30, label: "30 minutos", desc: "Equilibrio estándar para operación diaria." },
     { min: 60, label: "60 minutos", desc: "Sesión extendida para estaciones dedicadas." },
     { min: 0, label: "Desactivado", desc: "No cerrar sesión automáticamente por inactividad." },
   ];
@@ -1011,7 +1014,7 @@ function SeguridadPanel({
           </p>
         </div>
 
-        <div className="grid gap-3 p-6 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 p-6 sm:grid-cols-2 lg:grid-cols-3">
           {opcionesIdle.map((op) => {
             const activo = idleMin === op.min;
             return (

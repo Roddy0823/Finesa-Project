@@ -47,7 +47,7 @@ export const obtenerActaPorToken = createServerFn({ method: "POST" })
   });
 
 export const firmarConToken = createServerFn({ method: "POST" })
-  .inputValidator((d) => z.object({ token: z.string().regex(/^[a-f0-9]{64}$/), firma: firmaSchema }).parse(d))
+  .inputValidator((d) => z.object({ token: z.string().regex(/^[a-f0-9]{64}$/), firma: firmaSchema, ip: z.string().optional() }).parse(d))
   .handler(async ({ data }) => {
     const rl = checkRateLimit(`firmar-token:${clientIp()}`, 10, 5 * 60_000);
     if (!rl.allowed) throw new Error("Demasiados intentos de firma desde esta conexión. Espere unos minutos.");
@@ -56,12 +56,12 @@ export const firmarConToken = createServerFn({ method: "POST" })
     // Marcar como usado primero (un solo uso, evita dobles envíos)
     const { data: upd } = await v.admin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("id", v.tk!.id).is("used_at", null).select("id");
     if (!upd?.length) throw new Error("Este enlace ya fue utilizado.");
-    return ejecutarFirma(v.admin, { actaId: v.tk!.acta_id, firmaDataUrl: data.firma, medio: "enlace remoto", actorId: null });
+    return ejecutarFirma(v.admin, { actaId: v.tk!.acta_id, firmaDataUrl: data.firma, medio: "enlace remoto", actorId: null, ipCliente: data.ip });
   });
 
 export const firmarPresencial = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d) => z.object({ actaId: z.string().uuid(), firma: firmaSchema }).parse(d))
+  .inputValidator((d) => z.object({ actaId: z.string().uuid(), firma: firmaSchema, ip: z.string().optional() }).parse(d))
   .handler(async ({ data, context }) => {
     const { data: ok } = await context.supabase.rpc("has_permiso", { _user_id: context.userId, _p: "firmas_capturar" });
     if (!ok) throw new Error("No tiene permiso para capturar firmas.");
@@ -76,19 +76,19 @@ export const firmarPresencial = createServerFn({ method: "POST" })
     }
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     await supabaseAdmin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("acta_id", data.actaId).is("used_at", null);
-    return ejecutarFirma(supabaseAdmin, { actaId: data.actaId, firmaDataUrl: data.firma, medio: "presencial", actorId: context.userId });
+    return ejecutarFirma(supabaseAdmin, { actaId: data.actaId, firmaDataUrl: data.firma, medio: "presencial", actorId: context.userId, ipCliente: data.ip });
   });
 
 export const firmarComoEmpleado = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .inputValidator((d) => z.object({ actaId: z.string().uuid(), firma: firmaSchema }).parse(d))
+  .inputValidator((d) => z.object({ actaId: z.string().uuid(), firma: firmaSchema, ip: z.string().optional() }).parse(d))
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const c = await cargarActaCompleta(supabaseAdmin, data.actaId);
     const emp = c.acta.empleado as unknown as { user_id: string | null } | null;
     if (!emp || emp.user_id !== context.userId) throw new Error("Esta acta no le pertenece.");
     await supabaseAdmin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("acta_id", data.actaId).is("used_at", null);
-    return ejecutarFirma(supabaseAdmin, { actaId: data.actaId, firmaDataUrl: data.firma, medio: "portal del empleado", actorId: context.userId });
+    return ejecutarFirma(supabaseAdmin, { actaId: data.actaId, firmaDataUrl: data.firma, medio: "portal del empleado", actorId: context.userId, ipCliente: data.ip });
   });
 
 export const urlArchivo = createServerFn({ method: "POST" })

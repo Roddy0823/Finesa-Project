@@ -83,6 +83,7 @@ export type Database = {
           numero: number
           observaciones: string | null
           owner_id: string | null
+          pdf_hash: string | null
           pdf_path: string | null
           prestamo_hasta: string | null
           prestamo_reparacion_equipo_id: string | null
@@ -109,6 +110,7 @@ export type Database = {
           numero?: never
           observaciones?: string | null
           owner_id?: string | null
+          pdf_hash?: string | null
           pdf_path?: string | null
           prestamo_hasta?: string | null
           prestamo_reparacion_equipo_id?: string | null
@@ -135,6 +137,7 @@ export type Database = {
           numero?: never
           observaciones?: string | null
           owner_id?: string | null
+          pdf_hash?: string | null
           pdf_path?: string | null
           prestamo_hasta?: string | null
           prestamo_reparacion_equipo_id?: string | null
@@ -518,6 +521,7 @@ export type Database = {
         Row: {
           activo_fijo: string | null
           anio_compra: number | null
+          baja_documento_path: string | null
           codigo_interno: boolean
           created_at: string
           created_by: string | null
@@ -549,6 +553,7 @@ export type Database = {
         Insert: {
           activo_fijo?: string | null
           anio_compra?: number | null
+          baja_documento_path?: string | null
           codigo_interno?: boolean
           created_at?: string
           created_by?: string | null
@@ -580,6 +585,7 @@ export type Database = {
         Update: {
           activo_fijo?: string | null
           anio_compra?: number | null
+          baja_documento_path?: string | null
           codigo_interno?: boolean
           created_at?: string
           created_by?: string | null
@@ -1112,6 +1118,7 @@ export type Database = {
           p_estado: Database["public"]["Enums"]["equipo_estado"]
           p_motivo: string
           p_proveedor?: string
+          p_documento_baja?: string
         }
         Returns: undefined
       }
@@ -1165,6 +1172,13 @@ export type Database = {
         Args: never
         Returns: {
           estado: Database["public"]["Enums"]["equipo_estado"]
+          total: number
+        }[]
+      }
+      panel_conteos_actas: {
+        Args: never
+        Returns: {
+          estado: Database["public"]["Enums"]["acta_estado"]
           total: number
         }[]
       }

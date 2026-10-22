@@ -6,6 +6,14 @@ import { fetchAll } from "@/lib/fetchAll";
 import { errMsg } from "@/lib/constantes";
 import { cn } from "@/lib/utils";
 import {
+  cargaMasivaStore,
+  useCargaMasivaStore,
+  type Fase,
+  type FilaResultado,
+  type Paso,
+  type Resultado,
+} from "@/lib/cargaMasivaStore";
+import {
   CAT_LABEL,
   HOJAS,
   MAX_FILAS_HOJA,
@@ -25,7 +33,7 @@ import {
 import { DataTablePagination, usePaginacion } from "@/components/DataTablePagination";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { toast } from "sonner";
@@ -47,10 +55,6 @@ import {
   XCircle,
 } from "lucide-react";
 
-type Resultado = "nuevo" | "existe" | "error" | "fallo";
-type FilaResultado = FilaValidada & { resultado?: Resultado | undefined; detalleResultado?: string | undefined };
-type Fase = "idle" | "leyendo" | "revision" | "procesando" | "resultado";
-type Paso = "catalogos" | "empleados" | "equipos" | "asignaciones";
 type Filtro = "todos" | "nuevo" | "existe" | "error" | "avisos" | "fallo";
 
 const HOJA_ICON: Record<HojaId, typeof Users> = { empleados: Users, equipos: Laptop, asignaciones: Link2 };
@@ -70,17 +74,20 @@ export function ImportExcel({
 }) {
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [fase, setFase] = useState<Fase>("idle");
+  const {
+    fase,
+    lectura,
+    ctx,
+    val,
+    paso,
+    pct,
+    detallePaso,
+    autorizaCat,
+    final,
+  } = useCargaMasivaStore();
+
   const [arrastrando, setArrastrando] = useState(false);
-  const [lectura, setLectura] = useState<Lectura | null>(null);
-  const [ctx, setCtx] = useState<Contexto | null>(null);
-  const [val, setVal] = useState<Validacion | null>(null);
   const [confirmar, setConfirmar] = useState(false);
-  const [autorizaCat, setAutorizaCat] = useState(false);
-  const [paso, setPaso] = useState<Paso | null>(null);
-  const [pct, setPct] = useState(0);
-  const [detallePaso, setDetallePaso] = useState("");
-  const [final, setFinal] = useState<{ filas: FilaResultado[]; metricas: [string, number | string][]; catCreados: number; duracion: number } | null>(null);
 
   // Evita cerrar la pestaña en plena importación
   useEffect(() => {
@@ -101,44 +108,34 @@ export function ImportExcel({
   }
 
   async function seleccionar(file: File) {
-    setFase("leyendo");
-    setFinal(null);
-    setAutorizaCat(false);
+    cargaMasivaStore.setFase("leyendo");
     try {
       const l = await leerArchivo(file);
       const c = await cargarContexto();
-      setLectura(l);
-      setCtx(c);
-      setVal(validar(l, c));
-      setFase("revision");
+      const v = validar(l, c);
+      cargaMasivaStore.setRevision(l, c, v);
     } catch (e) {
       toast.error(errMsg(e));
-      setFase("idle");
+      cargaMasivaStore.reiniciar();
     }
   }
 
   async function revalidar() {
     if (!lectura) return;
-    setFase("leyendo");
+    cargaMasivaStore.setFase("leyendo");
     try {
       const c = await cargarContexto();
-      setCtx(c);
-      setVal(validar(lectura, c));
-      setFase("revision");
+      const v = validar(lectura, c);
+      cargaMasivaStore.setRevision(lectura, c, v);
       toast.success("Validación actualizada con los datos más recientes");
     } catch (e) {
       toast.error(errMsg(e));
-      setFase("revision");
+      cargaMasivaStore.setFase("revision");
     }
   }
 
   function reiniciar() {
-    setFase("idle");
-    setLectura(null);
-    setVal(null);
-    setCtx(null);
-    setFinal(null);
-    setAutorizaCat(false);
+    cargaMasivaStore.reiniciar();
   }
 
   const res = useMemo(() => (val ? Object.fromEntries(ORDEN.map((h) => [h, resumen(val.filas[h])])) as Record<HojaId, ReturnType<typeof resumen>> : null), [val]);
@@ -151,7 +148,7 @@ export function ImportExcel({
   async function procesar() {
     if (!val || !ctx || !lectura) return;
     setConfirmar(false);
-    setFase("procesando");
+    cargaMasivaStore.iniciarProcesamiento();
     const t0 = Date.now();
     const filas: Record<HojaId, FilaResultado[]> = {
       empleados: val.filas.empleados.map((f) => ({ ...f, ...(f.estado !== "nuevo" ? { resultado: f.estado } : {}) })),
@@ -161,7 +158,7 @@ export function ImportExcel({
     let catCreados = 0;
     try {
       // 1. Catálogos faltantes (solo Administrador; la RLS lo vuelve a exigir)
-      setPaso("catalogos"); setPct(2); setDetallePaso("Preparando catálogos…");
+      cargaMasivaStore.setProgreso("catalogos", 2, "Preparando catálogos…");
       const catMap = new Map(ctx.catalogos.map((c) => [`${c.tipo}|${c.nombre.trim().toLowerCase()}`, c.id]));
       if (val.faltantes.length) {
         const { data, error } = await supabase.from("catalogo_items").insert(val.faltantes.map((c) => ({ tipo: c.tipo, nombre: c.nombre }))).select("id, tipo, nombre");
@@ -179,8 +176,9 @@ export function ImportExcel({
       async function insertar<T extends { id: string }>(tabla: "empleados" | "equipos", lista: FilaResultado[], columnas: string, base: number, rango: number, onOk: (f: FilaResultado, row: T) => void) {
         for (let i = 0; i < lista.length; i += LOTE) {
           const lote = lista.slice(i, i + LOTE);
-          setPct(base + Math.round((i / Math.max(1, lista.length)) * rango));
-          setDetallePaso(`${Math.min(i + LOTE, lista.length).toLocaleString("es-CO")} de ${lista.length.toLocaleString("es-CO")}`);
+          const pctActual = base + Math.round((i / Math.max(1, lista.length)) * rango);
+          const detalle = `${Math.min(i + LOTE, lista.length).toLocaleString("es-CO")} de ${lista.length.toLocaleString("es-CO")}`;
+          cargaMasivaStore.setProgreso(tabla, pctActual, detalle);
           const payload = lote.map(resolver);
           const { data, error } = await supabase.from(tabla).insert(payload as never).select(columnas);
           if (!error && data && data.length === lote.length) {
@@ -196,12 +194,12 @@ export function ImportExcel({
       }
 
       // 2. Empleados
-      setPaso("empleados");
+      cargaMasivaStore.setProgreso("empleados", 5, "Iniciando empleados…");
       const empIds = new Map(ctx.empleados.map((e) => [normCedula(e.identificacion)!, e.id]));
       await insertar<{ id: string; identificacion: string }>("empleados", filas.empleados.filter((f) => f.estado === "nuevo"), "id, identificacion", 5, 30, (_f, row) => empIds.set(normCedula(row.identificacion)!, row.id));
 
       // 3. Equipos
-      setPaso("equipos");
+      cargaMasivaStore.setProgreso("equipos", 35, "Iniciando equipos…");
       const eqIds = new Map<string, string>();
       for (const e of ctx.equipos) {
         if (e.estado !== "disponible" || e.empleado_id) continue;
@@ -215,7 +213,7 @@ export function ImportExcel({
       });
 
       // 4. Asignaciones (RPC transaccional con trazabilidad «carga_inicial»)
-      setPaso("asignaciones");
+      cargaMasivaStore.setProgreso("asignaciones", 70, "Iniciando asignaciones…");
       const pendientes = filas.asignaciones.filter((f) => f.estado === "nuevo" && f.asig);
       const items: { fila: FilaResultado; equipo_id: string; empleado_id: string }[] = [];
       for (const f of pendientes) {
@@ -231,8 +229,9 @@ export function ImportExcel({
       const LOTE_ASIG = 150;
       for (let i = 0; i < items.length; i += LOTE_ASIG) {
         const lote = items.slice(i, i + LOTE_ASIG);
-        setPct(70 + Math.round((i / Math.max(1, items.length)) * 28));
-        setDetallePaso(`${Math.min(i + LOTE_ASIG, items.length).toLocaleString("es-CO")} de ${items.length.toLocaleString("es-CO")}`);
+        const pctActual = 70 + Math.round((i / Math.max(1, items.length)) * 28);
+        const detalle = `${Math.min(i + LOTE_ASIG, items.length).toLocaleString("es-CO")} de ${items.length.toLocaleString("es-CO")}`;
+        cargaMasivaStore.setProgreso("asignaciones", pctActual, detalle);
         const { error } = await supabase.rpc("asignar_carga_inicial", { p_items: lote.map(({ equipo_id, empleado_id }) => ({ equipo_id, empleado_id })) });
         if (error) {
           lote.forEach((x) => { x.fila.resultado = "fallo"; x.fila.detalleResultado = traducirError(error); });
@@ -248,7 +247,7 @@ export function ImportExcel({
         }
       }
 
-      setPct(99); setDetallePaso("Registrando en auditoría…");
+      cargaMasivaStore.setProgreso("asignaciones", 99, "Registrando en auditoría…");
       const cuenta = (h: HojaId, r: Resultado) => filas[h].filter((f) => f.resultado === r).length;
       const empOk = cuenta("empleados", "nuevo"), eqOk = cuenta("equipos", "nuevo"), asOk = cuenta("asignaciones", "nuevo");
       const fallos = ORDEN.reduce((s, h) => s + cuenta(h, "fallo"), 0);
@@ -258,7 +257,7 @@ export function ImportExcel({
       });
 
       const todas = ORDEN.flatMap((h) => filas[h]);
-      setFinal({
+      cargaMasivaStore.finalizarExito({
         filas: todas,
         catCreados,
         duracion: Math.round((Date.now() - t0) / 1000),
@@ -272,17 +271,12 @@ export function ImportExcel({
           ["Fallos al guardar", fallos],
         ],
       });
-      setPct(100);
-      setFase("resultado");
       if (fallos) toast.warning(`Carga finalizada con ${fallos} fila(s) que no se pudieron guardar. Revise el informe.`);
       else toast.success(`Carga completada: ${empOk} empleados, ${eqOk} equipos y ${asOk} asignaciones`);
       void qc.invalidateQueries();
     } catch (e) {
       toast.error(errMsg(e));
-      setFase("revision");
-    } finally {
-      setPaso(null);
-      setDetallePaso("");
+      cargaMasivaStore.finalizarError();
     }
   }
 
@@ -412,7 +406,7 @@ export function ImportExcel({
               )}
               {val.faltantes.length > 0 && (
                 <label className="flex items-start gap-2.5 rounded-lg border border-border/80 p-2.5 text-xs">
-                  <Checkbox checked={autorizaCat} onCheckedChange={(v) => setAutorizaCat(v === true)} className="mt-0.5" />
+                  <Checkbox checked={autorizaCat} onCheckedChange={(v) => cargaMasivaStore.setAutorizaCat(v === true)} className="mt-0.5" />
                   <span>Autorizo crear los {val.faltantes.length} valor(es) nuevo(s) en los catálogos del sistema.</span>
                 </label>
               )}
@@ -614,18 +608,46 @@ function PanelProgreso({ paso, pct, detalle, hayCat }: { paso: Paso | null; pct:
   ];
   const idx = pasos.findIndex(([p]) => p === paso);
   return (
-    <div className="mx-auto max-w-xl rounded-2xl border border-border/80 bg-card p-6 shadow-2xs">
-      <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><Loader2 className="h-4 w-4 animate-spin text-primary" />Importando datos…</div>
-      <p className="mt-1 text-xs text-muted-foreground">No cierre ni recargue esta pestaña hasta que finalice el proceso.</p>
-      <div className="mt-5 space-y-1.5">
-        <Progress value={pct} />
-        <div className="flex justify-between text-[11px] text-muted-foreground"><span>{detalle}</span><span className="font-mono">{pct}%</span></div>
+    <div className="mx-auto max-w-xl space-y-5 rounded-2xl border border-border/80 bg-card p-6 shadow-2xs">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5 text-base font-semibold text-foreground">
+          <Loader2 className="h-5 w-5 animate-spin text-primary" />
+          <span>Importando datos a la base de datos…</span>
+        </div>
+        <span className="font-mono text-sm font-bold text-primary">{pct}%</span>
       </div>
-      <ol className="mt-5 space-y-2.5">
+
+      <div className="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/10 p-3.5 text-xs text-foreground">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+        <div className="space-y-0.5">
+          <div className="font-semibold text-warning-foreground">Navegación protegida</div>
+          <p className="leading-relaxed text-muted-foreground">
+            No abandone ni recargue esta página mientras se procesan los datos. La navegación se mantendrá restringida hasta el 100% para evitar inconsistencias de inventario o asignaciones erróneas.
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <Progress value={pct} className="h-2.5" />
+        <div className="flex justify-between text-xs text-muted-foreground">
+          <span>{detalle || "Procesando registros…"}</span>
+          <span className="font-mono font-medium text-foreground">{pct}% completado</span>
+        </div>
+      </div>
+
+      <ol className="space-y-3 border-t border-border/60 pt-3">
         {pasos.map(([p, l], i) => (
           <li key={p} className="flex items-center gap-2.5 text-xs">
-            {i < idx ? <CheckCircle2 className="h-4 w-4 text-success" /> : i === idx ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : <CircleDashed className="h-4 w-4 text-muted-foreground/50" />}
-            <span className={cn(i === idx ? "font-semibold text-foreground" : i < idx ? "text-foreground" : "text-muted-foreground")}>{l}</span>
+            {i < idx ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />
+            ) : i === idx ? (
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            ) : (
+              <CircleDashed className="h-4 w-4 shrink-0 text-muted-foreground/50" />
+            )}
+            <span className={cn(i === idx ? "font-semibold text-foreground" : i < idx ? "text-foreground" : "text-muted-foreground")}>
+              {l}
+            </span>
           </li>
         ))}
       </ol>

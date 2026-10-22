@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { firmarConToken, obtenerActaPorToken } from "@/lib/firmas.functions";
+import { detectarIpNavegador } from "@/lib/detectarIp";
 import { SignaturePad } from "@/components/SignaturePad";
 import { ActaResumen } from "@/components/ActaResumen";
 import { ThemeToggle } from "@/lib/theme";
@@ -41,7 +42,8 @@ function FirmarRemoto() {
     setEnviando(true);
     setError(null);
     try {
-      await firmar({ data: { token, firma } });
+      const ip = await detectarIpNavegador();
+      await firmar({ data: { token, firma, ip } });
       setHecho(true);
     } catch (e) {
       setError(errMsg(e));

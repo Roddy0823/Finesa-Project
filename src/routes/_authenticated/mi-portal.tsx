@@ -7,6 +7,7 @@ import { useMe } from "@/lib/me";
 import { useCatalogos } from "@/lib/catalogos";
 import { TIPO_ACTA, errMsg, fmtFecha } from "@/lib/constantes";
 import { firmarComoEmpleado, urlArchivo } from "@/lib/firmas.functions";
+import { detectarIpNavegador } from "@/lib/detectarIp";
 import { descargarPdfActa } from "@/lib/descargarPdf";
 import { PageHeader, EstadoActa, EstadoEquipo } from "@/components/Estado";
 import { DataTablePagination, usePaginacion } from "@/components/DataTablePagination";
@@ -40,7 +41,7 @@ function Portal() {
       if (!emp) return null;
       const [eq, ac, fa, ce] = await Promise.all([
         supabase.from("equipos").select("*").eq("empleado_id", emp.id).in("estado", ["asignado", "en_reparacion"]),
-        supabase.from("actas").select("*, items:acta_items(equipo:equipos(*))").eq("empleado_id", emp.id).order("created_at", { ascending: false }),
+        supabase.from("actas").select("*, items:acta_items(id, direccion, estado_destino, estado_fisico, accesorios, nota, equipo:equipos(*))").eq("empleado_id", emp.id).order("created_at", { ascending: false }),
         supabase.from("reportes_falla").select("equipo_id").eq("empleado_id", emp.id).eq("estado", "abierto"),
         supabase.from("certificaciones").select("id, nombre, fecha_limite, respuestas:certificacion_respuestas(id)").eq("activa", true).order("created_at", { ascending: false }).limit(1).maybeSingle(),
       ]);
@@ -135,9 +136,27 @@ function Portal() {
   );
 }
 
-type ActaP = { id: string; numero: number; tipo: string; created_at: string; observaciones: string | null; tecnico_nombre: string | null; items: { equipo: { serie: string; modelo: string | null; tipo_id: string; marca_id: string | null } | null }[] };
+type ActaP = {
+  id: string;
+  numero: number;
+  tipo: string;
+  created_at: string;
+  observaciones: string | null;
+  tecnico_nombre: string | null;
+  es_prestamo?: boolean;
+  prestamo_hasta?: string | null;
+  items: {
+    id: string;
+    direccion?: string | null;
+    estado_destino?: string | null;
+    estado_fisico?: string | null;
+    accesorios?: string | null;
+    nota?: string | null;
+    equipo: { serie: string; activo_fijo?: string | null; modelo: string | null; tipo_id: string; marca_id: string | null } | null;
+  }[];
+};
 
-function FirmaPortal({ acta, emp, onDone }: { acta: ActaP; emp: { nombre: string; identificacion: string; cargo: string | null; area_id: string | null; sede_id: string | null }; onDone: () => void }) {
+function FirmaPortal({ acta, emp, onDone }: { acta: ActaP; emp: { nombre: string; identificacion: string; cargo: string | null; area_id: string | null; sede_id: string | null; empresa_id?: string | null }; onDone: () => void }) {
   const cat = useCatalogos();
   const qc = useQueryClient();
   const fn = useServerFn(firmarComoEmpleado);
@@ -147,15 +166,41 @@ function FirmaPortal({ acta, emp, onDone }: { acta: ActaP; emp: { nombre: string
   async function firmar() {
     if (!firma) return;
     setLoading(true);
-    try { await fn({ data: { actaId: acta.id, firma } }); toast.success("Acta firmada"); qc.invalidateQueries({ queryKey: ["portal"] }); onDone(); }
-    catch (e) { toast.error(errMsg(e)); } finally { setLoading(false); }
+    try {
+      const ip = await detectarIpNavegador();
+      await fn({ data: { actaId: acta.id, firma, ip } });
+      toast.success("Acta firmada");
+      qc.invalidateQueries({ queryKey: ["portal"] });
+      onDone();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setLoading(false);
+    }
   }
   return (
     <div className="space-y-4">
       <ActaResumen a={{
-        numero: acta.numero, tipo: acta.tipo, created_at: acta.created_at, observaciones: acta.observaciones, tecnico: acta.tecnico_nombre,
-        empleado: { nombre: emp.nombre, identificacion: emp.identificacion, cargo: emp.cargo ?? "", area: cat.nombre(emp.area_id), sede: cat.nombre(emp.sede_id) },
-        equipos: acta.items.filter((i) => i.equipo).map((i) => ({ serie: i.equipo!.serie, modelo: i.equipo!.modelo ?? "", tipo: cat.nombre(i.equipo!.tipo_id), marca: cat.nombre(i.equipo!.marca_id) })),
+        numero: acta.numero,
+        tipo: acta.tipo,
+        created_at: acta.created_at,
+        observaciones: acta.observaciones,
+        tecnico: acta.tecnico_nombre,
+        es_prestamo: acta.es_prestamo,
+        prestamo_hasta: acta.prestamo_hasta,
+        empleado: { nombre: emp.nombre, identificacion: emp.identificacion, cargo: emp.cargo ?? "", area: cat.nombre(emp.area_id), sede: cat.nombre(emp.sede_id), empresa: cat.nombre(emp.empresa_id) },
+        equipos: acta.items.filter((i) => i.equipo).map((i) => ({
+          serie: i.equipo!.serie,
+          activo_fijo: i.equipo!.activo_fijo ?? "",
+          modelo: i.equipo!.modelo ?? "",
+          tipo: cat.nombre(i.equipo!.tipo_id),
+          marca: cat.nombre(i.equipo!.marca_id),
+          direccion: i.direccion ?? (acta.tipo === "devolucion" ? "devolucion" : "entrega"),
+          estado_fisico: i.estado_fisico ?? "Bueno",
+          accesorios: i.accesorios,
+          estado_destino: i.estado_destino,
+          nota: i.nota,
+        })),
       }} />
       <SignaturePad onChange={setFirma} />
       <label className="flex items-start gap-3 text-sm">

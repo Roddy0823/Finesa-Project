@@ -1,5 +1,5 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { getRequestHeader } from "@tanstack/react-start/server";
+import { getRequestHeader, getRequestIP } from "@tanstack/react-start/server";
 import { validarPngBase64 } from "./security.server";
 
 type Admin = (typeof import("@/integrations/supabase/client.server"))["supabaseAdmin"];
@@ -8,6 +8,89 @@ export function clientIp() {
   const cf = getRequestHeader("cf-connecting-ip");
   const xff = getRequestHeader("x-forwarded-for");
   return cf || (xff ? xff.split(",")[0]!.trim() : "") || getRequestHeader("x-real-ip") || "desconocida";
+}
+
+let serverEgressIpCache: { ip: string; timestamp: number } | null = null;
+
+async function obtenerIpSalidaServidor(): Promise<string | null> {
+  if (process.env.NODE_ENV === "test" || process.env.VITEST) {
+    return null;
+  }
+  const ahora = Date.now();
+  if (serverEgressIpCache && ahora - serverEgressIpCache.timestamp < 10 * 60_000) {
+    return serverEgressIpCache.ip;
+  }
+  try {
+    const res = await fetch("https://api.ipify.org?format=json", {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { ip?: string };
+      if (data?.ip) {
+        serverEgressIpCache = { ip: data.ip, timestamp: ahora };
+        return data.ip;
+      }
+    }
+  } catch {
+    /* fallback si no hay salida a internet o falla la resolución */
+  }
+  return null;
+}
+
+function esIpLocalOInvalida(ip?: string | null): boolean {
+  if (!ip) return true;
+  const normalizada = ip.trim().toLowerCase();
+  return (
+    normalizada === "" ||
+    normalizada === "desconocida" ||
+    normalizada === "127.0.0.1" ||
+    normalizada === "::1" ||
+    normalizada === "localhost" ||
+    normalizada === "::ffff:127.0.0.1"
+  );
+}
+
+export async function resolverIpFirma(opts?: { ipCliente?: string | null | undefined }): Promise<string> {
+  // 1. Cabeceras directas de proxy estándar
+  const cf = getRequestHeader("cf-connecting-ip");
+  if (cf && !esIpLocalOInvalida(cf)) return cf.trim();
+
+  const xff = getRequestHeader("x-forwarded-for");
+  if (xff) {
+    const primera = xff.split(",")[0]?.trim();
+    if (primera && !esIpLocalOInvalida(primera)) return primera;
+  }
+
+  const real = getRequestHeader("x-real-ip");
+  if (real && !esIpLocalOInvalida(real)) return real.trim();
+
+  const trueClient = getRequestHeader("true-client-ip") || getRequestHeader("x-client-ip");
+  if (trueClient && !esIpLocalOInvalida(trueClient)) return trueClient.trim();
+
+  // 2. IP del socket / conexión HTTP de TanStack Start
+  try {
+    const socketIp = typeof getRequestIP === "function" ? getRequestIP({ xForwardedFor: true }) : undefined;
+    if (socketIp) {
+      const limpia = socketIp.replace(/^::ffff:/, "").trim();
+      if (!esIpLocalOInvalida(limpia)) return limpia;
+    }
+  } catch {
+    /* getRequestIP no disponible o no aplicable */
+  }
+
+  // 3. IP reportada por el navegador del cliente (detectada vía detectarIpNavegador)
+  if (opts?.ipCliente && !esIpLocalOInvalida(opts.ipCliente)) {
+    return opts.ipCliente.trim();
+  }
+
+  // 4. IP pública de salida corporativa (ej. Artemis 190.90.34.66) consultada desde el servidor
+  const ipSalida = await obtenerIpSalidaServidor();
+  if (ipSalida && !esIpLocalOInvalida(ipSalida)) {
+    return ipSalida;
+  }
+
+  // 5. Último recurso (compatibilidad con clientIp())
+  return clientIp();
 }
 
 export async function registrarAuditoria(admin: Admin, userId: string | null, tabla: string, accion: string, registroId: string | null, detalle: string) {
@@ -167,7 +250,10 @@ export async function generarPdf(dto: ActaDTO, firmaPng: Uint8Array, meta: { fec
   return pdf.save();
 }
 
-export async function ejecutarFirma(admin: Admin, opts: { actaId: string; firmaDataUrl: string; medio: string; actorId: string | null }) {
+export async function ejecutarFirma(
+  admin: Admin,
+  opts: { actaId: string; firmaDataUrl: string; medio: string; actorId: string | null; ipCliente?: string | null | undefined },
+) {
   const completa = await cargarActaCompleta(admin, opts.actaId);
   if (completa.acta.estado !== "pendiente") throw new Error("El acta ya no está pendiente de firma.");
   const pngCheck = validarPngBase64(opts.firmaDataUrl);
@@ -175,7 +261,7 @@ export async function ejecutarFirma(admin: Admin, opts: { actaId: string; firmaD
   const bytes = pngCheck.bytes;
 
   const fecha = new Date().toISOString();
-  const ip = clientIp();
+  const ip = await resolverIpFirma({ ipCliente: opts.ipCliente });
   const ua = getRequestHeader("user-agent") ?? "";
   const dto = actaDTO(completa);
   let tecnicoPng: Uint8Array | null = null;
@@ -185,21 +271,52 @@ export async function ejecutarFirma(admin: Admin, opts: { actaId: string; firmaD
     if (blob) tecnicoPng = new Uint8Array(await blob.arrayBuffer());
   }
   const pdfBytes = await generarPdf(dto, bytes, { fecha, ip, medio: opts.medio, ua }, tecnicoPng);
+  const pdfHash = await sha256Hex(pdfBytes);
 
   const base = `${opts.actaId}`;
   const firmaPath = `${base}/firma.png`;
   const pdfPath = `${base}/acta-${dto.numero}.pdf`;
-  const up1 = await admin.storage.from("actas").upload(firmaPath, bytes, { contentType: "image/png", upsert: false });
+  const up1 = await admin.storage.from("actas").upload(firmaPath, bytes, { contentType: "image/png", upsert: true });
   if (up1.error) throw new Error("No se pudo guardar la firma: " + up1.error.message);
-  const up2 = await admin.storage.from("actas").upload(pdfPath, pdfBytes, { contentType: "application/pdf", upsert: false });
+  const up2 = await admin.storage.from("actas").upload(pdfPath, pdfBytes, { contentType: "application/pdf", upsert: true });
   if (up2.error) throw new Error("No se pudo guardar el PDF: " + up2.error.message);
 
-  const { error } = await admin
+  const updatePayload: Record<string, unknown> = {
+    estado: "firmada",
+    firmado_at: fecha,
+    firma_ip: ip,
+    firma_user_agent: ua.slice(0, 400),
+    firma_medio: opts.medio,
+    firma_path: firmaPath,
+    pdf_path: pdfPath,
+    pdf_hash: pdfHash,
+  };
+
+  let { error } = await admin
     .from("actas")
-    .update({ estado: "firmada", firmado_at: fecha, firma_ip: ip, firma_user_agent: ua.slice(0, 400), firma_medio: opts.medio, firma_path: firmaPath, pdf_path: pdfPath })
+    .update(updatePayload as never)
     .eq("id", opts.actaId)
     .eq("estado", "pendiente");
+
+  // Fallback si la migración de 'pdf_hash' aún no se ha ejecutado en Supabase
+  if (error && /pdf_hash/i.test(error.message)) {
+    delete updatePayload.pdf_hash;
+    const retry = await admin
+      .from("actas")
+      .update(updatePayload as never)
+      .eq("id", opts.actaId)
+      .eq("estado", "pendiente");
+    error = retry.error;
+  }
+
   if (error) throw new Error(error.message);
-  await registrarAuditoria(admin, opts.actorId, "actas", "FIRMA", opts.actaId, `Acta #${dto.numero} firmada (${opts.medio}) desde IP ${ip}`);
-  return { ok: true, numero: dto.numero };
+  await registrarAuditoria(
+    admin,
+    opts.actorId,
+    "actas",
+    "FIRMA",
+    opts.actaId,
+    `Acta #${dto.numero} firmada (${opts.medio}) desde IP ${ip} · SHA-256 PDF: ${pdfHash.slice(0, 16)}…`,
+  );
+  return { ok: true, numero: dto.numero, pdfHash };
 }
