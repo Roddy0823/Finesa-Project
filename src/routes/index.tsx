@@ -21,6 +21,7 @@ import {
 import { useServerFn } from "@tanstack/react-start";
 import { ingresoEmpleado } from "@/lib/usuarios.functions";
 import { obtenerConfigPortal } from "@/lib/ajustes.functions";
+import { registrarActividadGlobal, limpiarActividadGlobal } from "@/lib/inactividad";
 
 export const Route = createFileRoute("/")({
   loader: async () => {
@@ -88,6 +89,7 @@ function Login() {
         refresh_token: r.refresh_token,
       });
       if (error) throw error;
+      registrarActividadGlobal();
       qc.removeQueries({ queryKey: ["me"] });
       irDestino();
     } catch {
@@ -98,7 +100,12 @@ function Login() {
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) irDestino();
+      if (data.session?.user) {
+        registrarActividadGlobal();
+        irDestino();
+      } else {
+        limpiarActividadGlobal();
+      }
     });
   }, [nav]);
 
@@ -111,6 +118,7 @@ function Login() {
       toast.error(error.message.includes("banned") ? "Su cuenta está suspendida." : "Correo o contraseña incorrectos.");
       return;
     }
+    registrarActividadGlobal();
     await supabase.rpc("log_evento", { p_accion: "LOGIN", p_detalle: "Inicio de sesión mesa de soporte" });
     qc.removeQueries({ queryKey: ["me"] });
     irDestino();

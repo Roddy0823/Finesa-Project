@@ -19,7 +19,8 @@ import {
   leerMinutosInactividad,
   leerUltimaActividad,
   registrarActividadGlobal,
-} from "@/routes/_authenticated/route";
+  limpiarActividadGlobal,
+} from "@/lib/inactividad";
 
 describe("Inactividad y Bloqueo de Sesión", () => {
   beforeEach(() => {
@@ -53,5 +54,12 @@ describe("Inactividad y Bloqueo de Sesión", () => {
     const hace20Min = Date.now() - 20 * 60_000;
     mockLocalStorage.setItem(LAST_ACTIVITY_KEY, String(hace20Min));
     expect(leerUltimaActividad()).toBe(hace20Min);
+  });
+
+  it("limpia la marca de actividad al cerrar sesión para permitir reingreso inmediato", () => {
+    registrarActividadGlobal();
+    expect(mockLocalStorage.getItem(LAST_ACTIVITY_KEY)).not.toBeNull();
+    limpiarActividadGlobal();
+    expect(mockLocalStorage.getItem(LAST_ACTIVITY_KEY)).toBeNull();
   });
 });

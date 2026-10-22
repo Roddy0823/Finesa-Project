@@ -9,7 +9,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import { errMsg, fmtFecha } from "@/lib/constantes";
 import { copiarTexto, cn } from "@/lib/utils";
 import { actualizarNombre, borrarMiFirma, cambiarMiPassword, guardarMiFirma, obtenerMiFirma } from "@/lib/ajustes.functions";
-import { IDLE_CONFIG_EVENT, IDLE_STORAGE_KEY, leerMinutosInactividad, registrarActividadGlobal } from "./route";
+import { IDLE_CONFIG_EVENT, IDLE_STORAGE_KEY, leerMinutosInactividad, registrarActividadGlobal } from "@/lib/inactividad";
 import { PageHeader } from "@/components/Estado";
 import { Certificaciones } from "@/components/Certificaciones";
 import { ConfigPortalEmpleados } from "@/components/ConfigPortalEmpleados";

@@ -45,33 +45,24 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
-export const IDLE_CONFIG_EVENT = "finesa:idle-config-changed";
-export const IDLE_STORAGE_KEY = "finesa-idle-min";
-export const LAST_ACTIVITY_KEY = "finesa-last-activity";
-
-export function leerMinutosInactividad(): number {
-  if (typeof window === "undefined") return 30;
-  const raw = localStorage.getItem(IDLE_STORAGE_KEY);
-  if (raw === null) return 30;
-  const val = Number(raw);
-  if (Number.isFinite(val) && val >= 0) return val;
-  return 30;
-}
-
-export function leerUltimaActividad(): number {
-  if (typeof window === "undefined") return Date.now();
-  const raw = localStorage.getItem(LAST_ACTIVITY_KEY);
-  const val = Number(raw);
-  if (Number.isFinite(val) && val > 0) return val;
-  const now = Date.now();
-  localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
-  return now;
-}
-
-export function registrarActividadGlobal(): void {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
-}
+export {
+  IDLE_CONFIG_EVENT,
+  IDLE_STORAGE_KEY,
+  LAST_ACTIVITY_KEY,
+  leerMinutosInactividad,
+  leerUltimaActividad,
+  registrarActividadGlobal,
+  limpiarActividadGlobal,
+} from "@/lib/inactividad";
+import {
+  IDLE_CONFIG_EVENT,
+  IDLE_STORAGE_KEY,
+  LAST_ACTIVITY_KEY,
+  leerMinutosInactividad,
+  leerUltimaActividad,
+  registrarActividadGlobal,
+  limpiarActividadGlobal,
+} from "@/lib/inactividad";
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
@@ -103,6 +94,7 @@ function getInitials(name: string): string {
 }
 
 function Shell() {
+  const { user } = Route.useRouteContext();
   const { data: me, isLoading, isError: meError, refetch: refetchMe } = useMe();
   const obtenerConfigFn = useServerFn(obtenerConfigPortal);
   const configPortal = useQuery({
@@ -198,14 +190,19 @@ function Shell() {
 
   const salir = useCallback(
     async (motivo = "Cierre de sesión") => {
+      limpiarActividadGlobal();
       try {
-        await supabase.rpc("log_evento", { p_accion: "LOGOUT", p_detalle: motivo });
+        await Promise.race([
+          supabase.rpc("log_evento", { p_accion: "LOGOUT", p_detalle: motivo }),
+          new Promise((resolve) => setTimeout(resolve, 800)),
+        ]);
       } catch {
         /* continuar cierre */
       }
       await qc.cancelQueries();
       qc.clear();
       await supabase.auth.signOut();
+      limpiarActividadGlobal();
       nav({ to: "/", replace: true });
     },
     [qc, nav],
@@ -221,10 +218,16 @@ function Shell() {
 
     const verificarYSalirSiExpiro = (): boolean => {
       if (saliendo) return true;
-      const last = leerUltimaActividad();
+      let last = leerUltimaActividad();
+      const lastSignIn = user?.last_sign_in_at ? Date.parse(user.last_sign_in_at) : 0;
+      if (lastSignIn > 0 && last < lastSignIn) {
+        registrarActividadGlobal();
+        last = Date.now();
+      }
       const elapsed = Date.now() - last;
       if (elapsed >= limitMs) {
         saliendo = true;
+        limpiarActividadGlobal();
         setIdleRestanteSeg(null);
         toast.info("Su sesión se cerró automáticamente por inactividad.");
         void salir(`Cierre automático por inactividad (${idleMin} min)`);
@@ -271,12 +274,18 @@ function Shell() {
 
     const timer = window.setInterval(() => {
       if (saliendo) return;
-      const last = leerUltimaActividad();
+      let last = leerUltimaActividad();
+      const lastSignIn = user?.last_sign_in_at ? Date.parse(user.last_sign_in_at) : 0;
+      if (lastSignIn > 0 && last < lastSignIn) {
+        registrarActividadGlobal();
+        last = Date.now();
+      }
       const elapsed = Date.now() - last;
       const remainingMs = limitMs - elapsed;
       if (remainingMs <= 0) {
         saliendo = true;
         window.clearInterval(timer);
+        limpiarActividadGlobal();
         setIdleRestanteSeg(null);
         toast.info("Su sesión se cerró automáticamente por inactividad.");
         void salir(`Cierre automático por inactividad (${idleMin} min)`);

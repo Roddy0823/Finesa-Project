@@ -6,6 +6,7 @@ import { Command as CommandPrimitive } from "cmdk";
 import { supabase } from "@/integrations/supabase/client";
 import { useMe } from "@/lib/me";
 import { useTheme } from "@/lib/theme";
+import { limpiarActividadGlobal } from "@/lib/inactividad";
 import {
   Search,
   LayoutDashboard,
@@ -125,10 +126,19 @@ export function CommandPalette() {
   };
 
   async function cerrarSesion() {
-    await supabase.rpc("log_evento", { p_accion: "LOGOUT", p_detalle: "Cierre de sesión desde paleta de comandos" });
+    limpiarActividadGlobal();
+    try {
+      await Promise.race([
+        supabase.rpc("log_evento", { p_accion: "LOGOUT", p_detalle: "Cierre de sesión desde paleta de comandos" }),
+        new Promise((resolve) => setTimeout(resolve, 800)),
+      ]);
+    } catch {
+      /* continuar */
+    }
     await qc.cancelQueries();
     qc.clear();
     await supabase.auth.signOut();
+    limpiarActividadGlobal();
     nav({ to: "/", replace: true });
   }
 
