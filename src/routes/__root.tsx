@@ -193,17 +193,35 @@ function RootComponent() {
   }, []);
 
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN") {
+    let userId: string | null = null;
+    const pending = new Set<ReturnType<typeof setTimeout>>();
+    const { data } = supabase.auth.onAuthStateChange((event, session) => {
+      const nextUserId = session?.user.id ?? null;
+      const changedUser = userId !== nextUserId;
+      userId = nextUserId;
+      if (event === "SIGNED_IN" && changedUser) {
         registrarActividadGlobal();
       } else if (event === "SIGNED_OUT") {
         limpiarActividadGlobal();
       }
-      if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
-      router.invalidate();
-      if (event !== "SIGNED_OUT") queryClient.invalidateQueries();
+      if (changedUser || event === "SIGNED_OUT") {
+        void queryClient.cancelQueries();
+        queryClient.clear();
+      }
+      if (event === "INITIAL_SESSION" || (event === "SIGNED_IN" && !changedUser)) return;
+      // Ejecutar fuera del callback de Auth: los guards consultan Supabase
+      // y no deben esperar el bloqueo interno que mantiene este callback.
+      const timer = setTimeout(() => {
+        pending.delete(timer);
+        void router.invalidate();
+        if (event !== "SIGNED_OUT") void queryClient.invalidateQueries();
+      }, 0);
+      pending.add(timer);
     });
-    return () => data.subscription.unsubscribe();
+    return () => {
+      data.subscription.unsubscribe();
+      pending.forEach(clearTimeout);
+    };
   }, [router, queryClient]);
 
   return (

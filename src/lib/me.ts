@@ -21,24 +21,22 @@ export const meQuery = queryOptions({
   gcTime: 10 * 60_000,
   refetchOnWindowFocus: false,
   queryFn: async (): Promise<Me | null> => {
-    const { data: s } = await supabase.auth.getSession();
-    let sessionUser = s.session?.user ?? null;
-    if (!sessionUser) {
-      const { data: u } = await supabase.auth.getUser();
-      sessionUser = u.user;
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      if (error.status === 401 || error.status === 403 || error.name === "AuthSessionMissingError") return null;
+      throw error;
     }
-    if (!sessionUser) return null;
-    const id = sessionUser.id;
-    const [p, r, pe, freshUser] = await Promise.all([
+    const user = data.user;
+    if (!user) return null;
+    const id = user.id;
+    const [p, r, pe] = await Promise.all([
       supabase.from("profiles").select("*").eq("id", id).maybeSingle(),
       supabase.from("user_roles").select("role").eq("user_id", id),
       supabase.from("user_permisos").select("permiso").eq("user_id", id),
-      supabase.auth.getUser().catch(() => ({ data: { user: sessionUser } })),
     ]);
     if (p.error) throw p.error;
     if (r.error) throw r.error;
     if (pe.error) throw pe.error;
-    const user = freshUser.data?.user ?? sessionUser;
     const roles = (r.data ?? []).map((x) => x.role as string);
     const dbPermisos = (pe.data ?? []).map((x) => x.permiso as Permiso);
     const rawExtra = (user.app_metadata as { permisos_extra?: unknown } | undefined)?.permisos_extra;

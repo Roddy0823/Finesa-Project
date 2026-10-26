@@ -99,14 +99,14 @@ function Login() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) {
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (!error && data.user) {
         registrarActividadGlobal();
         irDestino();
       } else {
         limpiarActividadGlobal();
       }
-    });
+    }).catch(() => { /* Permitir reintentar el ingreso ante fallos de red. */ });
   }, [nav]);
 
   async function submit(e: React.FormEvent) {

@@ -96,9 +96,21 @@ Plataforma corporativa integral para la gestión del ciclo de vida de activos te
 3. Edita `.env` con los valores de tu proyecto Supabase:
    ```env
    VITE_SUPABASE_URL="https://tu-proyecto.supabase.co"
-   VITE_SUPABASE_PUBLISHABLE_KEY="tu_anon_public_key"
+   VITE_SUPABASE_PUBLISHABLE_KEY="tu_publishable_key"
+   SUPABASE_URL="https://tu-proyecto.supabase.co"
+   SUPABASE_PUBLISHABLE_KEY="tu_publishable_key"
    SUPABASE_SERVICE_ROLE_KEY="tu_service_role_key"
    ```
+
+### Auth y rutas protegidas
+
+El personal ingresa con correo y contraseña de Supabase Auth; los empleados usan `ingresoEmpleado` con cédula y PIN. No hay registro público de administradores: su asignación se realiza exclusivamente por SQL.
+
+Las rutas bajo `_authenticated` validan la identidad con `getUser()` y consultan el perfil, roles y permisos antes de permitir la navegación. `src/lib/route-access.ts` define el acceso por URL: los empleados usan `/mi-portal` y `/ajustes`, y el personal accede a los módulos según sus permisos. Las cuentas inactivas o sin rol ven la pantalla de cuenta sin acceso. Al cerrar sesión o cambiar de usuario se limpia la caché de consultas.
+
+La sesión del navegador se mantiene en localStorage, y este grupo de rutas tiene SSR deshabilitado. Las funciones protegidas de servidor reciben un Bearer token, validan sus claims y el estado activo mediante `requireSupabaseAuth`. Las políticas RLS y las RPC siguen siendo responsables de autorizar los datos y operaciones.
+
+Configura las variables `SUPABASE_URL` y `SUPABASE_PUBLISHABLE_KEY` también en el servidor. La clave `SUPABASE_SERVICE_ROLE_KEY` es exclusiva del servidor y nunca debe llevar el prefijo `VITE_`.
 
 ### Instalación y Ejecución
 

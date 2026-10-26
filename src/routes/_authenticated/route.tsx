@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { supabase } from "@/integrations/supabase/client";
 import { meQuery, useMe } from "@/lib/me";
+import { puedeAccederRuta } from "@/lib/route-access";
 import { catalogosQuery } from "@/lib/catalogos";
 import { useCargaMasivaStore } from "@/lib/cargaMasivaStore";
 import { obtenerConfigPortal } from "@/lib/ajustes.functions";
@@ -66,16 +67,19 @@ import {
 
 export const Route = createFileRoute("/_authenticated")({
   ssr: false,
-  beforeLoad: async ({ context }) => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    let user = sessionData.session?.user ?? null;
-    if (!user) {
-      const { data, error } = await supabase.auth.getUser();
-      if (error || !data.user) throw redirect({ to: "/" });
-      user = data.user;
+  beforeLoad: async ({ context, location }) => {
+    const me = await context.queryClient.fetchQuery({ ...meQuery, staleTime: 0 });
+    if (!me) throw redirect({ to: "/", replace: true });
+    const { data, error } = await supabase.auth.getUser();
+    if (error) throw error;
+    if (!data.user || data.user.id !== me.id) throw redirect({ to: "/", replace: true });
+    const user = data.user;
+    if (me.activo && (me.isStaff || me.isEmpleado)) {
+      if (!puedeAccederRuta(me, location.pathname)) {
+        throw redirect({ to: me.isEmpleado ? "/mi-portal" : "/panel", replace: true });
+      }
+      void context.queryClient.prefetchQuery(catalogosQuery);
     }
-    void context.queryClient.prefetchQuery(meQuery);
-    void context.queryClient.prefetchQuery(catalogosQuery);
     return { user };
   },
   component: Shell,
