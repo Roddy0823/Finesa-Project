@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { firmarConToken, obtenerActaPorToken } from "@/lib/firmas.functions";
 import { detectarIpNavegador } from "@/lib/detectarIp";
@@ -36,9 +36,23 @@ function FirmarRemoto() {
   const [enviando, setEnviando] = useState(false);
   const [hecho, setHecho] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ahora, setAhora] = useState(Date.now);
+  const expires = q.data?.expires;
+  const vencido = !!expires && ahora >= new Date(expires).getTime();
+
+  useEffect(() => {
+    if (!expires) return;
+    const actualizar = () => setAhora(Date.now());
+    const timer = window.setTimeout(actualizar, Math.max(0, new Date(expires).getTime() - Date.now()));
+    window.addEventListener("focus", actualizar);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", actualizar);
+    };
+  }, [expires]);
 
   async function enviar() {
-    if (!firma) return;
+    if (!firma || vencido) return;
     setEnviando(true);
     setError(null);
     try {
@@ -68,6 +82,7 @@ function FirmarRemoto() {
         {q.isLoading && <p className="py-12 text-center text-sm text-muted-foreground">Cargando acta…</p>}
         {q.isError && <Aviso texto="El enlace no es válido." />}
         {q.data?.error && !hecho && <Aviso texto={q.data.error} />}
+        {vencido && !hecho && <Aviso texto="El enlace venció. Su vigencia es de 15 minutos desde que se genera." />}
         {hecho && (
           <div className="rounded-xl border border-success/30 bg-success/10 p-6 text-center">
             <CheckCircle2 className="mx-auto h-10 w-10 text-success" />
@@ -77,9 +92,10 @@ function FirmarRemoto() {
             </p>
           </div>
         )}
-        {q.data?.acta && !hecho && (
+        {q.data?.acta && !hecho && !vencido && (
           <>
             <ActaResumen a={q.data.acta} />
+            <p className="text-sm text-muted-foreground">Este enlace es válido durante 15 minutos desde su generación. Si vence sin firmar, soporte debe generar y enviar un nuevo enlace.</p>
             <section className="space-y-3 rounded-xl border border-border/80 bg-card p-5 shadow-2xs">
               <h2 className="text-base font-semibold">Su firma electrónica</h2>
               <SignaturePad onChange={setFirma} />
@@ -107,7 +123,7 @@ function Aviso({ texto }: { texto: string }) {
     <div className="rounded-xl border border-warning/40 bg-warning/15 p-6 text-center">
       <AlertTriangle className="mx-auto h-8 w-8 text-warning-foreground" />
       <p className="mt-3 font-medium">{texto}</p>
-      <p className="mt-1 text-sm text-muted-foreground">Solicite un nuevo enlace al área de soporte.</p>
+      <p className="mt-1 text-sm text-muted-foreground">Solicite al área de soporte que genere y le envíe un nuevo enlace.</p>
     </div>
   );
 }

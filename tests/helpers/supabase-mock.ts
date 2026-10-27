@@ -69,6 +69,8 @@ export function crearSupabaseMock(opts: { onQuery?: Responder; onRpc?: RpcRespon
         return b;
       },
       eq: filtro("eq"),
+      is: filtro("is"),
+      gt: filtro("gt"),
       neq: filtro("neq"),
       not: filtro("not"),
       ilike: filtro("ilike"),

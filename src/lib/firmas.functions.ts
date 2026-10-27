@@ -5,14 +5,17 @@ import { actaDTO, cargarActaCompleta, clientIp, ejecutarFirma, registrarAuditori
 import { checkRateLimit } from "./security.server";
 
 const firmaSchema = z.string().max(3_000_000).startsWith("data:image/png;base64,");
+const VIGENCIA_ENLACE_MS = 15 * 60_000;
 
 async function validarToken(token: string) {
   const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
   const { data } = await supabaseAdmin.from("tokens_firma").select("*").eq("token", token).maybeSingle();
   if (!data) return { admin: supabaseAdmin, error: "El enlace no es válido." as const };
   if (data.used_at) return { admin: supabaseAdmin, error: "Este enlace ya fue utilizado." as const };
-  if (new Date(data.expires_at).getTime() < Date.now()) return { admin: supabaseAdmin, error: "El enlace expiró (vigencia de 48 horas)." as const };
-  return { admin: supabaseAdmin, tk: data };
+  // Limitar también los enlaces emitidos antes del cambio de vigencia.
+  const expires = Math.min(new Date(data.expires_at).getTime(), new Date(data.created_at).getTime() + VIGENCIA_ENLACE_MS);
+  if (!Number.isFinite(expires) || expires <= Date.now()) return { admin: supabaseAdmin, error: "El enlace venció (vigencia de 15 minutos). Solicite que generen y le envíen un nuevo enlace." as const };
+  return { admin: supabaseAdmin, tk: data, expires: new Date(expires).toISOString() };
 }
 
 export const crearEnlaceFirma = createServerFn({ method: "POST" })
@@ -24,13 +27,14 @@ export const crearEnlaceFirma = createServerFn({ method: "POST" })
     const { data: acta } = await context.supabase.from("actas").select("id, estado").eq("id", data.actaId).maybeSingle();
     if (!acta || acta.estado !== "pendiente") throw new Error("El acta no está pendiente de firma.");
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    await supabaseAdmin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("acta_id", data.actaId).is("used_at", null);
+    const { error: revokeError } = await supabaseAdmin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("acta_id", data.actaId).is("used_at", null);
+    if (revokeError) throw new Error("No se pudo invalidar el enlace anterior. Intente generar el enlace nuevamente.");
     const bytes = crypto.getRandomValues(new Uint8Array(32));
     const token = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-    const expires = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
+    const expires = new Date(Date.now() + VIGENCIA_ENLACE_MS).toISOString();
     const { error } = await supabaseAdmin.from("tokens_firma").insert({ acta_id: data.actaId, token, expires_at: expires, created_by: context.userId });
     if (error) throw new Error(error.message);
-    await registrarAuditoria(supabaseAdmin, context.userId, "tokens_firma", "ENLACE", data.actaId, "Enlace de firma remota generado (48 h)");
+    await registrarAuditoria(supabaseAdmin, context.userId, "tokens_firma", "ENLACE", data.actaId, "Enlace de firma remota generado (15 minutos)");
     return { token, expires };
   });
 
@@ -43,7 +47,7 @@ export const obtenerActaPorToken = createServerFn({ method: "POST" })
     if ("error" in v && v.error) return { error: v.error, acta: null };
     const c = await cargarActaCompleta(v.admin, v.tk!.acta_id);
     if (c.acta.estado !== "pendiente") return { error: "Esta acta ya no está pendiente de firma.", acta: null };
-    return { error: null, acta: actaDTO(c) };
+    return { error: null, acta: actaDTO(c), expires: v.expires };
   });
 
 export const firmarConToken = createServerFn({ method: "POST" })
@@ -54,8 +58,9 @@ export const firmarConToken = createServerFn({ method: "POST" })
     const v = await validarToken(data.token);
     if ("error" in v && v.error) throw new Error(v.error);
     // Marcar como usado primero (un solo uso, evita dobles envíos)
-    const { data: upd } = await v.admin.from("tokens_firma").update({ used_at: new Date().toISOString() }).eq("id", v.tk!.id).is("used_at", null).select("id");
-    if (!upd?.length) throw new Error("Este enlace ya fue utilizado.");
+    const now = new Date();
+    const { data: upd } = await v.admin.from("tokens_firma").update({ used_at: now.toISOString() }).eq("id", v.tk!.id).is("used_at", null).gt("expires_at", now.toISOString()).gt("created_at", new Date(now.getTime() - VIGENCIA_ENLACE_MS).toISOString()).select("id");
+    if (!upd?.length) throw new Error("Este enlace ya fue utilizado o venció. Solicite que generen y le envíen un nuevo enlace.");
     return ejecutarFirma(v.admin, { actaId: v.tk!.acta_id, firmaDataUrl: data.firma, medio: "enlace remoto", actorId: null, ipCliente: data.ip });
   });
 

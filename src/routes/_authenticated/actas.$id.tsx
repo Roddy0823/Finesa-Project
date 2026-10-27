@@ -126,9 +126,9 @@ function DetalleActa() {
       setEnlaceGenerado(link);
       const copiado = await copiarTexto(link);
       if (copiado) {
-        toast.success("Enlace copiado. Válido por 48 horas y un solo uso.");
+        toast.success("Enlace copiado. Válido por 15 minutos y un solo uso. Si vence, genere y envíe uno nuevo.");
       } else {
-        toast.info("Enlace generado (48 h). Pulse «Copiar» en el recuadro para copiarlo.");
+        toast.info("Enlace generado (15 minutos). Pulse «Copiar» y envíelo. Si vence, genere y envíe uno nuevo.");
       }
     } catch (e) {
       toast.error(errMsg(e));

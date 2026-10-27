@@ -528,8 +528,8 @@ function Repositorio() {
                             const r = await enlace({ data: { actaId: a.id } });
                             const link = `${window.location.origin}/firmar/${r.token}`;
                             const copiado = await copiarTexto(link);
-                            if (copiado) toast.success("Enlace de firma copiado (48 h)");
-                            else toast.info("Enlace generado (48 h)");
+                            if (copiado) toast.success("Enlace de firma copiado (15 minutos). Si vence, genere y envíe uno nuevo.");
+                            else toast.info("Enlace generado (15 minutos). Si vence, genere y envíe uno nuevo.");
                           } catch (err) {
                             toast.error(errMsg(err));
                           }
